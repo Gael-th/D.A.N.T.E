@@ -86,3 +86,20 @@ module.exports = async (req, res) => {
     return res.status(500).json({ erro: 'Erro interno: ' + err.message });
   }
 };
+
+
+
+const res = await fetch('/api/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Authorization': SENHA },
+  body: JSON.stringify({ mensagem: texto })
+});
+
+const textoBruto = await res.text(); // Lê a resposta mesmo se não for JSON
+
+if (!res.ok) {
+  log.innerHTML += `<p style="color:#ef4444;"><strong>Erro ${res.status}:</strong> ${textoBruto}</p>`;
+  return;
+}
+
+const data = JSON.parse(textoBruto);
