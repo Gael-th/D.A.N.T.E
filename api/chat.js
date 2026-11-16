@@ -39,7 +39,6 @@
 //     let memorias = [];
 //     let historico = [];
 
-//     // Consultas protegidas com blocos try/catch individuais seguros
 //     try {
 //       const { data: memData } = await supabase.from('memorias').select('fato, categoria');
 //       if (memData) memorias = memData;
@@ -83,17 +82,36 @@
 //       }]
 //     };
 
-//     const response = await ai.models.generateContent({
-//       model: 'gemini-1.5-flash',
-//       contents: contextoChat,
-//       config: {
-//         systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-//         MEMÓRIAS PERMANENTES DO USUÁRIO:
-//         ${textoMemorias}
-//         Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
-//         tools: [salvarMemoriaTool]
+//     const configGeracao = {
+//       systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
+//       MEMÓRIAS PERMANENTES DO USUÁRIO:
+//       ${textoMemorias}
+//       Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
+//       tools: [salvarMemoriaTool]
+//     };
+
+//     // Sistema de fallback automático de modelos
+//     const modelosDisponiveis = ['gemini-3.8-flash', 'gemini-3.0-flash', 'gemini-2.5-flash-latest'];
+//     let response = null;
+//     let ultimoErro = null;
+
+//     for (const modelo of modelosDisponiveis) {
+//       try {
+//         response = await ai.models.generateContent({
+//           model: modelo,
+//           contents: contextoChat,
+//           config: configGeracao
+//         });
+//         if (response) break; // Se respondeu com sucesso, sai do loop
+//       } catch (errModelo) {
+//         ultimoErro = errModelo;
+//         console.warn(`Modelo ${modelo} falhou, tentando próximo...`);
 //       }
-//     });
+//     }
+
+//     if (!response) {
+//       throw ultimoErro || new Error('Nenhum modelo do Gemini respondeu à requisição.');
+//     }
 
 //     if (response.functionCalls && response.functionCalls.length > 0) {
 //       const call = response.functionCalls[0];
@@ -214,36 +232,18 @@ export default async function handler(req, res) {
       }]
     };
 
-    const configGeracao = {
-      systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-      MEMÓRIAS PERMANENTES DO USUÁRIO:
-      ${textoMemorias}
-      Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
-      tools: [salvarMemoriaTool]
-    };
-
-    // Sistema de fallback automático de modelos
-    const modelosDisponiveis = ['gemini-3.8-flash', 'gemini-3.0-flash', 'gemini-2.5-flash-latest'];
-    let response = null;
-    let ultimoErro = null;
-
-    for (const modelo of modelosDisponiveis) {
-      try {
-        response = await ai.models.generateContent({
-          model: modelo,
-          contents: contextoChat,
-          config: configGeracao
-        });
-        if (response) break; // Se respondeu com sucesso, sai do loop
-      } catch (errModelo) {
-        ultimoErro = errModelo;
-        console.warn(`Modelo ${modelo} falhou, tentando próximo...`);
+    // Chamada limpa usando o modelo atual suportado pela SDK `@google/genai`
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: contextoChat,
+      config: {
+        systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
+        MEMÓRIAS PERMANENTES DO USUÁRIO:
+        ${textoMemorias}
+        Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
+        tools: [salvarMemoriaTool]
       }
-    }
-
-    if (!response) {
-      throw ultimoErro || new Error('Nenhum modelo do Gemini respondeu à requisição.');
-    }
+    });
 
     if (response.functionCalls && response.functionCalls.length > 0) {
       const call = response.functionCalls[0];
