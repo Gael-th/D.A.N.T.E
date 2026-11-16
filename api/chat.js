@@ -99,17 +99,17 @@ export default async function handler(req, res) {
 }
 
 
-const res = await fetch('/api/chat', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json', 'Authorization': SENHA },
-  body: JSON.stringify({ mensagem: texto })
-});
+// const res = await fetch('/api/chat', {
+//   method: 'POST',
+//   headers: { 'Content-Type': 'application/json', 'Authorization': SENHA },
+//   body: JSON.stringify({ mensagem: texto })
+// });
 
-const textoBruto = await res.text(); // Lê a resposta mesmo se não for JSON
+// const textoBruto = await res.text(); // Lê a resposta mesmo se não for JSON
 
-if (!res.ok) {
-  log.innerHTML += `<p style="color:#ef4444;"><strong>Erro ${res.status}:</strong> ${textoBruto}</p>`;
-  return;
-}
+// if (!res.ok) {
+//   log.innerHTML += `<p style="color:#ef4444;"><strong>Erro ${res.status}:</strong> ${textoBruto}</p>`;
+//   return;
+// }
 
-const data = JSON.parse(textoBruto);
+// const data = JSON.parse(textoBruto);
