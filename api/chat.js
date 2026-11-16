@@ -256,6 +256,11 @@
 
 
 
+
+
+
+
+
 // import { GoogleGenAI, Type } from '@google/genai';
 // import { createClient } from '@supabase/supabase-js';
 
@@ -340,9 +345,9 @@
 //       }]
 //     };
 
-//     // Chamada limpa usando o modelo atual suportado pela SDK `@google/genai`
+//     // ATUALIZADO: Usando o modelo exigido pela API do Google
 //     const response = await ai.models.generateContent({
-//       model: 'gemini-2.5-flash',
+//       model: 'gemini-3.8-flash',
 //       contents: contextoChat,
 //       config: {
 //         systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
@@ -385,7 +390,6 @@
 //     return res.status(500).json({ erro: err.message || 'Erro interno no servidor do Dante.' });
 //   }
 // }
-
 
 
 
@@ -473,18 +477,38 @@ export default async function handler(req, res) {
       }]
     };
 
-    // ATUALIZADO: Usando o modelo exigido pela API do Google
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: contextoChat,
-      config: {
-        systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-        MEMÓRIAS PERMANENTES DO USUÁRIO:
-        ${textoMemorias}
-        Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
-        tools: [salvarMemoriaTool]
+    const configGeracao = {
+      systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
+      MEMÓRIAS PERMANENTES DO USUÁRIO:
+      ${textoMemorias}
+      Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
+      tools: [salvarMemoriaTool]
+    };
+
+    // SISTEMA DE TENTATIVAS REPETIDAS (RETRY) PARA ERROS 503 DE SOBRECARGA
+    let response = null;
+    let ultimoErro = null;
+    const maxTentativas = 3;
+
+    for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
+      try {
+        response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: contextoChat,
+          config: configGeracao
+        });
+        if (response) break; // Sucesso! Sai do loop
+      } catch (errApi) {
+        ultimoErro = errApi;
+        console.warn(`Tentativa ${tentativa} falhou (possível sobrecarga 503). Aguardando para tentar novamente...`);
+        // Aguarda 1.5 segundo antes de tentar de novo
+        await new Promise(resolve => setTimeout(resolve, 1500));
       }
-    });
+    }
+
+    if (!response) {
+      throw ultimoErro || new Error('Os servidores do Gemini estão temporariamente congestionados. Tente enviar a mensagem novamente em alguns segundos.');
+    }
 
     if (response.functionCalls && response.functionCalls.length > 0) {
       const call = response.functionCalls[0];
