@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
@@ -54,6 +54,99 @@
       } catch (err) {
         log.innerHTML += `<p style="color:#ef4444;"><strong>Falha:</strong> ${err.message}</p>`;
       }
+    };
+  </script>
+</body>
+</html> -->
+
+
+
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>D.A.N.T.E.</title>
+  <style>
+    body { background: #09090b; color: #e4e4e7; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    #log { width: 90%; max-width: 600px; height: 350px; overflow-y: auto; border: 1px solid #27272a; border-radius: 12px; padding: 20px; margin-bottom: 20px; background: #18181b; line-height: 1.5; scroll-behavior: smooth; }
+    button { background: #2563eb; border: none; color: white; padding: 16px 32px; font-size: 16px; font-weight: bold; cursor: pointer; border-radius: 50px; transition: 0.2s; }
+    button:hover { background: #1d4ed8; }
+  </style>
+</head>
+<body>
+  <div id="log">Dante online. Toque no botão para falar...</div>
+  <button id="mic">🎙️ Falar com Dante</button>
+
+  <script>
+    const SENHA = '@Ga05022006';
+    const log = document.getElementById('log');
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'pt-BR';
+    recognition.interimResults = false;
+
+    document.getElementById('mic').onclick = () => {
+      try {
+        recognition.start();
+        log.innerHTML += `<p style="color:#a1a1aa;"><em>Ouvindo...</em></p>`;
+        log.scrollTop = log.scrollHeight;
+      } catch (e) {
+        console.log("Microfone já ativo.");
+      }
+    };
+
+    recognition.onresult = async (event) => {
+      const texto = event.results[0][0].transcript;
+      log.innerHTML += `<p><strong>Você:</strong> ${texto}</p>`;
+      log.scrollTop = log.scrollHeight;
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': SENHA },
+          body: JSON.stringify({ mensagem: texto })
+        });
+
+        const textoBruto = await res.text();
+        let data;
+
+        // Bloco blindado contra falhas de HTML/Timeout da Vercel
+        try {
+          data = JSON.parse(textoBruto);
+        } catch (e) {
+          throw new Error("O servidor demorou para responder ou atingiu o limite de tempo (Timeout).");
+        }
+
+        if (!res.ok) {
+          log.innerHTML += `<p style="color:#ef4444;"><strong>Erro:</strong> ${data.erro || 'Erro no servidor'}</p>`;
+          log.scrollTop = log.scrollHeight;
+          return;
+        }
+
+        log.innerHTML += `<p style="color:#60a5fa;"><strong>Dante:</strong> ${data.resposta}</p>`;
+        log.scrollTop = log.scrollHeight;
+
+        // Fala instantânea
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel(); // Para áudios anteriores para não acumular
+          const fala = new SpeechSynthesisUtterance(data.resposta);
+          fala.lang = 'pt-BR';
+          fala.rate = 1.1; // Velocidade um pouco mais ágil
+          window.speechSynthesis.speak(fala);
+        }
+
+      } catch (err) {
+        log.innerHTML += `<p style="color:#ef4444;"><strong>Falha:</strong> ${err.message}</p>`;
+        log.scrollTop = log.scrollHeight;
+      }
+    };
+
+    recognition.onerror = (event) => {
+      log.innerHTML += `<p style="color:#f59e0b;"><em>Aviso no microfone: ${event.error}</em></p>`;
+      log.scrollTop = log.scrollHeight;
     };
   </script>
 </body>

@@ -261,6 +261,9 @@
 
 
 
+
+
+
 // import { GoogleGenAI, Type } from '@google/genai';
 // import { createClient } from '@supabase/supabase-js';
 
@@ -345,18 +348,38 @@
 //       }]
 //     };
 
-//     // ATUALIZADO: Usando o modelo exigido pela API do Google
-//     const response = await ai.models.generateContent({
-//       model: 'gemini-3.8-flash',
-//       contents: contextoChat,
-//       config: {
-//         systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-//         MEMÓRIAS PERMANENTES DO USUÁRIO:
-//         ${textoMemorias}
-//         Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
-//         tools: [salvarMemoriaTool]
+//     const configGeracao = {
+//       systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
+//       MEMÓRIAS PERMANENTES DO USUÁRIO:
+//       ${textoMemorias}
+//       Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
+//       tools: [salvarMemoriaTool]
+//     };
+
+//     // SISTEMA DE TENTATIVAS REPETIDAS (RETRY) PARA ERROS 503 DE SOBRECARGA
+//     let response = null;
+//     let ultimoErro = null;
+//     const maxTentativas = 3;
+
+//     for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
+//       try {
+//         response = await ai.models.generateContent({
+//           model: 'gemini-3.8-flash',
+//           contents: contextoChat,
+//           config: configGeracao
+//         });
+//         if (response) break; // Sucesso! Sai do loop
+//       } catch (errApi) {
+//         ultimoErro = errApi;
+//         console.warn(`Tentativa ${tentativa} falhou (possível sobrecarga 503). Aguardando para tentar novamente...`);
+//         // Aguarda 1.5 segundo antes de tentar de novo
+//         await new Promise(resolve => setTimeout(resolve, 1500));
 //       }
-//     });
+//     }
+
+//     if (!response) {
+//       throw ultimoErro || new Error('Os servidores do Gemini estão temporariamente congestionados. Tente enviar a mensagem novamente em alguns segundos.');
+//     }
 
 //     if (response.functionCalls && response.functionCalls.length > 0) {
 //       const call = response.functionCalls[0];
@@ -431,26 +454,17 @@ export default async function handler(req, res) {
       return res.status(400).json({ erro: 'Mensagem vazia.' });
     }
 
+    // Busca rápida em paralelo no Supabase para ganhar velocidade
     let memorias = [];
     let historico = [];
 
-    try {
-      const { data: memData } = await supabase.from('memorias').select('fato, categoria');
-      if (memData) memorias = memData;
-    } catch (e) {
-      console.warn('Tabela memorias vazia ou inacessível.');
-    }
+    const [memRes, histRes] = await Promise.all([
+      supabase.from('memorias').select('fato, categoria').catch(() => ({ data: [] })),
+      supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(10).catch(() => ({ data: [] }))
+    ]);
 
-    try {
-      const { data: histData } = await supabase
-        .from('mensagens')
-        .select('role, conteudo')
-        .order('criado_em', { ascending: false })
-        .limit(15);
-      if (histData) historico = histData;
-    } catch (e) {
-      console.warn('Tabela mensagens vazia ou inacessível.');
-    }
+    memorias = memRes.data || [];
+    historico = histRes.data || [];
 
     const textoMemorias = memorias.length > 0 
       ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
@@ -477,63 +491,37 @@ export default async function handler(req, res) {
       }]
     };
 
-    const configGeracao = {
-      systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-      MEMÓRIAS PERMANENTES DO USUÁRIO:
-      ${textoMemorias}
-      Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
-      tools: [salvarMemoriaTool]
-    };
-
-    // SISTEMA DE TENTATIVAS REPETIDAS (RETRY) PARA ERROS 503 DE SOBRECARGA
-    let response = null;
-    let ultimoErro = null;
-    const maxTentativas = 3;
-
-    for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
-      try {
-        response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: contextoChat,
-          config: configGeracao
-        });
-        if (response) break; // Sucesso! Sai do loop
-      } catch (errApi) {
-        ultimoErro = errApi;
-        console.warn(`Tentativa ${tentativa} falhou (possível sobrecarga 503). Aguardando para tentar novamente...`);
-        // Aguarda 1.5 segundo antes de tentar de novo
-        await new Promise(resolve => setTimeout(resolve, 1500));
+    // Chamada única direta e otimizada (sem loops pesados)
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: contextoChat,
+      config: {
+        systemInstruction: `Você é o Dante, o assistente pessoal do Gabriel. Seja direto, técnico e objetivo.
+        MEMÓRIAS PERMANENTES:
+        ${textoMemorias}
+        Se o usuário compartilhar algo relevante, chame a função 'salvar_memoria'.`,
+        tools: [salvarMemoriaTool],
+        maxOutputTokens: 800 // Limita o tamanho da resposta para garantir velocidade na Vercel
       }
-    }
-
-    if (!response) {
-      throw ultimoErro || new Error('Os servidores do Gemini estão temporariamente congestionados. Tente enviar a mensagem novamente em alguns segundos.');
-    }
+    });
 
     if (response.functionCalls && response.functionCalls.length > 0) {
       const call = response.functionCalls[0];
       if (call.name === 'salvar_memoria') {
-        try {
-          await supabase.from('memorias').insert({
-            fato: call.args.fato,
-            categoria: call.args.categoria || 'geral'
-          });
-        } catch (err) {
-          console.error('Erro ao salvar memória:', err.message);
-        }
+        supabase.from('memorias').insert({
+          fato: call.args.fato,
+          categoria: call.args.categoria || 'geral'
+        }).catch(() => {});
       }
     }
 
-    const respostaFinal = response.text || 'Memória registrada, chefe.';
+    const respostaFinal = response.text || 'Processado, chefe.';
 
-    try {
-      await supabase.from('mensagens').insert([
-        { role: 'user', conteudo: mensagem },
-        { role: 'model', conteudo: respostaFinal }
-      ]);
-    } catch (err) {
-      console.error('Erro ao salvar histórico:', err.message);
-    }
+    // Salva histórico em segundo plano (não trava a resposta ao usuário)
+    supabase.from('mensagens').insert([
+      { role: 'user', conteudo: mensagem },
+      { role: 'model', conteudo: respostaFinal }
+    ]).catch(() => {});
 
     return res.status(200).json({ resposta: respostaFinal });
 
