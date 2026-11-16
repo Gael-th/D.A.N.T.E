@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>D.A.N.T.E.</title>
+  <style>
+    body { background: #09090b; color: #e4e4e7; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    #log { width: 90%; max-width: 600px; height: 350px; overflow-y: auto; border: 1px solid #27272a; border-radius: 12px; padding: 20px; margin-bottom: 20px; background: #18181b; line-height: 1.5; }
+    button { background: #2563eb; border: none; color: white; padding: 16px 32px; font-size: 16px; font-weight: bold; cursor: pointer; border-radius: 50px; transition: 0.2s; }
+    button:hover { background: #1d4ed8; }
+  </style>
+</head>
+<body>
+  <div id="log">Dante online. Toque no botão para falar...</div>
+  <button id="mic">🎙️ Falar com Dante</button>
+
+  <script>
+    const SENHA = 'COLOQUE_SUA_SENHA_MESTRA_AQUI';
+    const log = document.getElementById('log');
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'pt-BR';
+
+    document.getElementById('mic').onclick = () => {
+      recognition.start();
+      log.innerHTML += `<p style="color:#a1a1aa;"><em>Ouvindo...</em></p>`;
+    };
+
+    recognition.onresult = async (event) => {
+      const texto = event.results[0][0].transcript;
+      log.innerHTML += `<p><strong>Você:</strong> ${texto}</p>`;
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': SENHA },
+          body: JSON.stringify({ mensagem: texto })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          log.innerHTML += `<p style="color:#ef4444;"><strong>Erro:</strong> ${data.erro}</p>`;
+          return;
+        }
+
+        log.innerHTML += `<p style="color:#60a5fa;"><strong>Dante:</strong> ${data.resposta}</p>`;
+        log.scrollTop = log.scrollHeight;
+
+        const fala = new SpeechSynthesisUtterance(data.resposta);
+        fala.lang = 'pt-BR';
+        window.speechSynthesis.speak(fala);
+      } catch (err) {
+        log.innerHTML += `<p style="color:#ef4444;"><strong>Falha:</strong> ${err.message}</p>`;
+      }
+    };
+  </script>
+</body>
+</html>
