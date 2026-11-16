@@ -416,6 +416,12 @@
 
 
 
+
+
+
+
+
+
 import { GoogleGenAI, Type } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 
@@ -509,27 +515,28 @@ export default async function handler(req, res) {
       maxOutputTokens: 800
     };
 
-    // LISTA DE MODELOS EM CASCATA: Se um falhar por 503, tenta o próximo automaticamente
-    const modelosParaTentar = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash'];
+    // TENTATIVAS AUTOMÁTICAS: Se o 3.8-flash der pico de demanda (503), tenta de novo em instantes
     let response = null;
     let ultimoErro = null;
+    const maxTentativas = 3;
 
-    for (const modeloAtual of modelosParaTentar) {
+    for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
       try {
         response = await ai.models.generateContent({
-          model: modeloAtual,
+          model: 'gemini-3.8-flash',
           contents: contextoChat,
           config: configGeracao
         });
-        if (response) break; // Sucesso! Sai do loop e segue o jogo
-      } catch (errModelo) {
-        ultimoErro = errModelo;
-        console.warn(`Modelo ${modeloAtual} indisponível (503/Outro), tentando próximo da lista...`);
+        if (response) break;
+      } catch (errApi) {
+        ultimoErro = errApi;
+        console.warn(`Tentativa ${tentativa} falhou. Aguardando para reenviar...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
 
     if (!response) {
-      throw ultimoErro || new Error('Todos os modelos do Gemini estão temporariamente indisponíveis devido a alta demanda.');
+      throw ultimoErro || new Error('Os servidores estão com alta demanda no momento. Tente novamente em alguns segundos.');
     }
 
     if (response.functionCalls && response.functionCalls.length > 0) {
