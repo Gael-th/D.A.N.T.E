@@ -457,15 +457,13 @@ export default async function handler(req, res) {
     let memorias = [];
     let historico = [];
 
-    // BUSCA SEGURA 1: Bloco isolado para a tabela memorias (sem usar .catch() encadeado)
     try {
       const { data: memData } = await supabase.from('memorias').select('fato, categoria');
       if (memData) memorias = memData;
     } catch (e) {
-      console.warn('Aviso: Não foi possível carregar a tabela memorias.');
+      console.warn('Aviso: Tabela memorias indisponível.');
     }
 
-    // BUSCA SEGURA 2: Bloco isolado para a tabela mensagens (sem usar .catch() encadeado)
     try {
       const { data: histData } = await supabase
         .from('mensagens')
@@ -474,7 +472,7 @@ export default async function handler(req, res) {
         .limit(10);
       if (histData) historico = histData;
     } catch (e) {
-      console.warn('Aviso: Não foi possível carregar o histórico de mensagens.');
+      console.warn('Aviso: Tabela mensagens indisponível.');
     }
 
     const textoMemorias = memorias.length > 0 
@@ -502,19 +500,37 @@ export default async function handler(req, res) {
       }]
     };
 
-    // Chamada otimizada ao Gemini 3.8 Flash com limite de tokens para velocidade
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: contextoChat,
-      config: {
-        systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-        MEMÓRIAS PERMANENTES:
-        ${textoMemorias}
-        Sempre que o Gabriel compartilhar algo relevante, chame a função 'salvar_memoria'.`,
-        tools: [salvarMemoriaTool],
-        maxOutputTokens: 800
+    const configGeracao = {
+      systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
+      MEMÓRIAS PERMANENTES:
+      ${textoMemorias}
+      Sempre que o Gabriel compartilhar algo relevante, chame a função 'salvar_memoria'.`,
+      tools: [salvarMemoriaTool],
+      maxOutputTokens: 800
+    };
+
+    // LISTA DE MODELOS EM CASCATA: Se um falhar por 503, tenta o próximo automaticamente
+    const modelosParaTentar = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-1.5-flash'];
+    let response = null;
+    let ultimoErro = null;
+
+    for (const modeloAtual of modelosParaTentar) {
+      try {
+        response = await ai.models.generateContent({
+          model: modeloAtual,
+          contents: contextoChat,
+          config: configGeracao
+        });
+        if (response) break; // Sucesso! Sai do loop e segue o jogo
+      } catch (errModelo) {
+        ultimoErro = errModelo;
+        console.warn(`Modelo ${modeloAtual} indisponível (503/Outro), tentando próximo da lista...`);
       }
-    });
+    }
+
+    if (!response) {
+      throw ultimoErro || new Error('Todos os modelos do Gemini estão temporariamente indisponíveis devido a alta demanda.');
+    }
 
     if (response.functionCalls && response.functionCalls.length > 0) {
       const call = response.functionCalls[0];
@@ -532,7 +548,6 @@ export default async function handler(req, res) {
 
     const respostaFinal = response.text || 'Processado, chefe.';
 
-    // Salvamento de histórico blindado em segundo plano
     try {
       await supabase.from('mensagens').insert([
         { role: 'user', conteudo: mensagem },
