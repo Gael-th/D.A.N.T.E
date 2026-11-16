@@ -454,17 +454,28 @@ export default async function handler(req, res) {
       return res.status(400).json({ erro: 'Mensagem vazia.' });
     }
 
-    // Busca rápida em paralelo no Supabase para ganhar velocidade
     let memorias = [];
     let historico = [];
 
-    const [memRes, histRes] = await Promise.all([
-      supabase.from('memorias').select('fato, categoria').catch(() => ({ data: [] })),
-      supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(10).catch(() => ({ data: [] }))
-    ]);
+    // BUSCA SEGURA 1: Bloco isolado para a tabela memorias (sem usar .catch() encadeado)
+    try {
+      const { data: memData } = await supabase.from('memorias').select('fato, categoria');
+      if (memData) memorias = memData;
+    } catch (e) {
+      console.warn('Aviso: Não foi possível carregar a tabela memorias.');
+    }
 
-    memorias = memRes.data || [];
-    historico = histRes.data || [];
+    // BUSCA SEGURA 2: Bloco isolado para a tabela mensagens (sem usar .catch() encadeado)
+    try {
+      const { data: histData } = await supabase
+        .from('mensagens')
+        .select('role, conteudo')
+        .order('criado_em', { ascending: false })
+        .limit(10);
+      if (histData) historico = histData;
+    } catch (e) {
+      console.warn('Aviso: Não foi possível carregar o histórico de mensagens.');
+    }
 
     const textoMemorias = memorias.length > 0 
       ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
@@ -491,37 +502,45 @@ export default async function handler(req, res) {
       }]
     };
 
-    // Chamada única direta e otimizada (sem loops pesados)
+    // Chamada otimizada ao Gemini 3.8 Flash com limite de tokens para velocidade
     const response = await ai.models.generateContent({
       model: 'gemini-3.8-flash',
       contents: contextoChat,
       config: {
-        systemInstruction: `Você é o Dante, o assistente pessoal do Gabriel. Seja direto, técnico e objetivo.
+        systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
         MEMÓRIAS PERMANENTES:
         ${textoMemorias}
-        Se o usuário compartilhar algo relevante, chame a função 'salvar_memoria'.`,
+        Sempre que o Gabriel compartilhar algo relevante, chame a função 'salvar_memoria'.`,
         tools: [salvarMemoriaTool],
-        maxOutputTokens: 800 // Limita o tamanho da resposta para garantir velocidade na Vercel
+        maxOutputTokens: 800
       }
     });
 
     if (response.functionCalls && response.functionCalls.length > 0) {
       const call = response.functionCalls[0];
       if (call.name === 'salvar_memoria') {
-        supabase.from('memorias').insert({
-          fato: call.args.fato,
-          categoria: call.args.categoria || 'geral'
-        }).catch(() => {});
+        try {
+          await supabase.from('memorias').insert({
+            fato: call.args.fato,
+            categoria: call.args.categoria || 'geral'
+          });
+        } catch (err) {
+          console.error('Erro ao salvar memória:', err.message);
+        }
       }
     }
 
     const respostaFinal = response.text || 'Processado, chefe.';
 
-    // Salva histórico em segundo plano (não trava a resposta ao usuário)
-    supabase.from('mensagens').insert([
-      { role: 'user', conteudo: mensagem },
-      { role: 'model', conteudo: respostaFinal }
-    ]).catch(() => {});
+    // Salvamento de histórico blindado em segundo plano
+    try {
+      await supabase.from('mensagens').insert([
+        { role: 'user', conteudo: mensagem },
+        { role: 'model', conteudo: respostaFinal }
+      ]);
+    } catch (err) {
+      console.error('Erro ao salvar histórico:', err.message);
+    }
 
     return res.status(200).json({ resposta: respostaFinal });
 
