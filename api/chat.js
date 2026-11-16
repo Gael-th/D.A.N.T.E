@@ -9,18 +9,16 @@
 //   if (req.method === 'OPTIONS') return res.status(200).end();
 //   if (req.method !== 'POST') return res.status(405).json({ erro: 'Método não permitido' });
 
-//   // 1. Validação prévia e rigorosa das variáveis de ambiente
 //   const rawUrl = process.env.SUPABASE_URL;
 //   const rawKey = process.env.SUPABASE_KEY;
 //   const apiKey = process.env.GEMINI_API_KEY;
 
 //   if (!apiKey || !rawUrl || !rawKey) {
 //     return res.status(500).json({ 
-//       erro: 'Variáveis de ambiente ausentes ou incompletas na Vercel. Verifique GEMINI_API_KEY, SUPABASE_URL e SUPABASE_KEY.' 
+//       erro: 'Variáveis de ambiente ausentes na Vercel. Verifique GEMINI_API_KEY, SUPABASE_URL e SUPABASE_KEY.' 
 //     });
 //   }
 
-//   // 2. Validação da senha de acesso
 //   if (req.headers['authorization'] !== process.env.SENHA_MESTRA) {
 //     return res.status(401).json({ erro: 'Acesso negado: Senha incorreta' });
 //   }
@@ -28,9 +26,8 @@
 //   try {
 //     const ai = new GoogleGenAI({ apiKey });
     
-//     // 3. LIMPEZA BLINDADA DA URL: Remove aspas, espaços e barras duplicadas do final
-//     const supabaseUrl = rawUrl.trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
-//     const supabaseKey = rawKey.trim().replace(/^['"]|['"]$/g, '');
+//     const supabaseUrl = String(rawUrl).trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
+//     const supabaseKey = String(rawKey).trim().replace(/^['"]|['"]$/g, '');
 
 //     const supabase = createClient(supabaseUrl, supabaseKey);
 
@@ -39,28 +36,20 @@
 //       return res.status(400).json({ erro: 'Mensagem vazia.' });
 //     }
 
-//     // 4. Busca segura nas tabelas do banco
 //     let memorias = [];
 //     let historico = [];
 
-//     const { data: memData, error: memErr } = await supabase.from('memorias').select('fato, categoria');
-//     if (memErr) {
-//       console.warn('Aviso ao buscar memorias (tabela pode estar vazia ou ausente):', memErr.message);
-//     } else {
-//       memorias = memData || [];
-//     }
+//     const { data: memData } = await supabase.from('memorias').select('fato, categoria').catch(() => ({ data: [] }));
+//     memorias = memData || [];
 
-//     const { data: histData, error: histErr } = await supabase
+//     const { data: histData } = await supabase
 //       .from('mensagens')
 //       .select('role, conteudo')
 //       .order('criado_em', { ascending: false })
-//       .limit(15);
+//       .limit(15)
+//       .catch(() => ({ data: [] }));
     
-//     if (histErr) {
-//       console.warn('Aviso ao buscar historico:', histErr.message);
-//     } else {
-//       historico = histData || [];
-//     }
+//     historico = histData || [];
 
 //     const textoMemorias = memorias.length > 0 
 //       ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
@@ -87,6 +76,7 @@
 //       }]
 //     };
 
+//     // ATUALIZADO: Usando o modelo padrão recomendado ('gemini-2.5-flash')
 //     const response = await ai.models.generateContent({
 //       model: 'gemini-2.5-flash',
 //       contents: contextoChat,
@@ -166,17 +156,24 @@ export default async function handler(req, res) {
     let memorias = [];
     let historico = [];
 
-    const { data: memData } = await supabase.from('memorias').select('fato, categoria').catch(() => ({ data: [] }));
-    memorias = memData || [];
+    // Consultas protegidas com blocos try/catch individuais seguros
+    try {
+      const { data: memData } = await supabase.from('memorias').select('fato, categoria');
+      if (memData) memorias = memData;
+    } catch (e) {
+      console.warn('Tabela memorias vazia ou inacessível.');
+    }
 
-    const { data: histData } = await supabase
-      .from('mensagens')
-      .select('role, conteudo')
-      .order('criado_em', { ascending: false })
-      .limit(15)
-      .catch(() => ({ data: [] }));
-    
-    historico = histData || [];
+    try {
+      const { data: histData } = await supabase
+        .from('mensagens')
+        .select('role, conteudo')
+        .order('criado_em', { ascending: false })
+        .limit(15);
+      if (histData) historico = histData;
+    } catch (e) {
+      console.warn('Tabela mensagens vazia ou inacessível.');
+    }
 
     const textoMemorias = memorias.length > 0 
       ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
@@ -203,9 +200,8 @@ export default async function handler(req, res) {
       }]
     };
 
-    // ATUALIZADO: Usando o modelo padrão recomendado ('gemini-2.5-flash')
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-1.5-flash',
       contents: contextoChat,
       config: {
         systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
@@ -219,19 +215,27 @@ export default async function handler(req, res) {
     if (response.functionCalls && response.functionCalls.length > 0) {
       const call = response.functionCalls[0];
       if (call.name === 'salvar_memoria') {
-        await supabase.from('memorias').insert({
-          fato: call.args.fato,
-          categoria: call.args.categoria || 'geral'
-        }).catch(err => console.error('Erro ao salvar memória:', err.message));
+        try {
+          await supabase.from('memorias').insert({
+            fato: call.args.fato,
+            categoria: call.args.categoria || 'geral'
+          });
+        } catch (err) {
+          console.error('Erro ao salvar memória:', err.message);
+        }
       }
     }
 
     const respostaFinal = response.text || 'Memória registrada, chefe.';
 
-    await supabase.from('mensagens').insert([
-      { role: 'user', conteudo: mensagem },
-      { role: 'model', conteudo: respostaFinal }
-    ]).catch(err => console.error('Erro ao salvar histórico:', err.message));
+    try {
+      await supabase.from('mensagens').insert([
+        { role: 'user', conteudo: mensagem },
+        { role: 'model', conteudo: respostaFinal }
+      ]);
+    } catch (err) {
+      console.error('Erro ao salvar histórico:', err.message);
+    }
 
     return res.status(200).json({ resposta: respostaFinal });
 
