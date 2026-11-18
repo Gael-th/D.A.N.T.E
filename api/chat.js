@@ -120,6 +120,60 @@
 // }
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
@@ -154,26 +208,42 @@ export default async function handler(req, res) {
       return res.status(400).json({ erro: 'Mensagem vazia.' });
     }
 
-    // 1. Busca memórias permanentes e as últimas 16 mensagens em paralelo
-    let memorias = [];
-    let historico = [];
+    // 1. Busca memórias, histórico e modelos ativos da Groq em paralelo
+    const [memRes, histRes, modelsRes] = await Promise.all([
+      supabase.from('memorias').select('fato, categoria').limit(30),
+      supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(16),
+      fetch('https://api.groq.com/openai/v1/models', {
+        headers: { 'Authorization': `Bearer ${groqKey}` }
+      }).then(r => r.json()).catch(() => ({ data: [] }))
+    ]);
 
-    try {
-      const [memRes, histRes] = await Promise.all([
-        supabase.from('memorias').select('fato, categoria').limit(30),
-        supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(16)
-      ]);
-      memorias = memRes.data || [];
-      historico = histRes.data || [];
-    } catch (e) {
-      console.warn('Aviso ao consultar Supabase:', e.message);
-    }
+    const memorias = memRes.data || [];
+    const historico = histRes.data || [];
+
+    // Escolhe automaticamente o melhor modelo de texto ativo na sua conta
+    const idsDisponiveis = (modelsRes.data || [])
+      .map(m => m.id)
+      .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts'));
+
+    const prioridades = [
+      'meta-llama/llama-4-maverick-17b-128e-instruct',
+      'meta-llama/llama-4-scout-17b-16e-instruct',
+      'llama-3.3-70b-versatile',
+      'llama-3.1-70b-versatile',
+      'llama-3.1-8b-instant',
+      'qwen/qwen3-32b'
+    ];
+
+    const modeloEscolhido =
+      prioridades.find(p => idsDisponiveis.includes(p)) ||
+      idsDisponiveis.find(id => id.includes('llama') || id.includes('qwen') || id.includes('gemma')) ||
+      idsDisponiveis[0] ||
+      'llama-3.1-8b-instant';
 
     const textoMemorias = memorias.length > 0 
       ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
       : 'Nenhuma memória salva ainda.';
 
-    // Formato padrão OpenAI/Groq (converte 'model' do banco antigo para 'assistant')
     const mensagensGroq = [
       {
         role: 'system',
@@ -207,7 +277,7 @@ Sempre que o Gabriel compartilhar um fato importante, preferência, projeto ou p
       }
     ];
 
-    // 2. Chamada ultrarrápida para a API da Groq
+    // 2. Chamada para a Groq usando o modelo detectado automaticamente
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -215,7 +285,7 @@ Sempre que o Gabriel compartilhar um fato importante, preferência, projeto ou p
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: modeloEscolhido,
         messages: mensagensGroq,
         tools: tools,
         tool_choice: 'auto',
@@ -227,13 +297,13 @@ Sempre que o Gabriel compartilhar um fato importante, preferência, projeto ou p
     const groqData = await groqResponse.json();
 
     if (!groqResponse.ok) {
-      throw new Error(groqData.error?.message || 'Erro na API da Groq');
+      throw new Error(`${groqData.error?.message || 'Erro na API da Groq'} (Modelo tentado: ${modeloEscolhido})`);
     }
 
     const choice = groqData.choices[0].message;
     let respostaFinal = choice.content || '';
 
-    // 3. Se a IA decidiu salvar uma memória, executa no Supabase e gera a confirmação verbal
+    // 3. Executa tool call de memória se acionada
     if (choice.tool_calls && choice.tool_calls.length > 0) {
       for (const toolCall of choice.tool_calls) {
         if (toolCall.function.name === 'salvar_memoria') {
@@ -254,7 +324,7 @@ Sempre que o Gabriel compartilhar um fato importante, preferência, projeto ou p
       respostaFinal = 'Processado, chefe.';
     }
 
-    // 4. Salva o histórico ANTES de enviar o status 200 (com a Groq sobra muito tempo)
+    // 4. Salva o histórico completo antes de encerrar a requisição
     await supabase.from('mensagens').insert([
       { role: 'user', conteudo: mensagem },
       { role: 'assistant', conteudo: respostaFinal }
