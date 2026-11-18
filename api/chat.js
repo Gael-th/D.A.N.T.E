@@ -402,6 +402,279 @@
 
 
 
+// import { createClient } from '@supabase/supabase-js';
+
+// export default async function handler(req, res) {
+//   res.setHeader('Access-Control-Allow-Origin', '*');
+//   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+//   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+//   if (req.method === 'OPTIONS') return res.status(200).end();
+//   if (req.method !== 'POST') return res.status(405).json({ erro: 'Método não permitido' });
+
+//   const rawUrl = process.env.SUPABASE_URL;
+//   const rawKey = process.env.SUPABASE_KEY;
+//   const groqKey = process.env.GROQ_API_KEY;
+
+//   if (!groqKey || !rawUrl || !rawKey) {
+//     return res.status(500).json({ 
+//       erro: 'Variáveis ausentes na Vercel. Verifique GROQ_API_KEY, SUPABASE_URL e SUPABASE_KEY.' 
+//     });
+//   }
+
+//   if (req.headers['authorization'] !== process.env.SENHA_MESTRA) {
+//     return res.status(401).json({ erro: 'Acesso negado: Senha incorreta' });
+//   }
+
+//   try {
+//     const supabaseUrl = String(rawUrl).trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
+//     const supabaseKey = String(rawKey).trim().replace(/^['"]|['"]$/g, '');
+//     const supabase = createClient(supabaseUrl, supabaseKey);
+
+//     const { mensagem } = req.body;
+//     if (!mensagem) {
+//       return res.status(400).json({ erro: 'Mensagem vazia.' });
+//     }
+
+//     // 1. Busca diretivas, memórias (com ID para permitir edição/exclusão), histórico e modelos
+//     const [memRes, histRes, modelsRes] = await Promise.all([
+//       supabase.from('memorias').select('id, fato, categoria').limit(40),
+//       supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(16),
+//       fetch('https://api.groq.com/openai/v1/models', {
+//         headers: { 'Authorization': `Bearer ${groqKey}` }
+//       }).then(r => r.json()).catch(() => ({ data: [] }))
+//     ]);
+
+//     const memorias = memRes.data || [];
+//     const historico = histRes.data || [];
+
+//     // Filtra apenas modelos de chat/texto válidos (ignora áudio, whisper, guard, orpheus, etc.)
+//     const idsDisponiveis = (modelsRes.data || [])
+//       .map(m => m.id)
+//       .filter(id =>
+//         !id.includes('whisper') &&
+//         !id.includes('guard') &&
+//         !id.includes('tts') &&
+//         !id.includes('orpheus') &&
+//         !id.includes('arabic') &&
+//         !id.includes('playai')
+//       );
+
+//     const prioridades = [
+//       'meta-llama/llama-4-maverick-17b-128e-instruct',
+//       'meta-llama/llama-4-scout-17b-16e-instruct',
+//       'llama-3.3-70b-versatile',
+//       'llama-3.1-70b-versatile',
+//       'llama-3.1-8b-instant',
+//       'qwen/qwen3-32b',
+//       'gemma2-9b-it'
+//     ];
+
+//     const modeloEscolhido =
+//       prioridades.find(p => idsDisponiveis.includes(p)) ||
+//       idsDisponiveis.find(id => id.includes('llama') || id.includes('qwen') || id.includes('gemma')) ||
+//       'llama-3.1-8b-instant';
+
+//     const textoDiretivas = memorias
+//       .filter(m => m.categoria === 'diretiva')
+//       .map(m => `- [ID: ${m.id}] ${m.fato}`)
+//       .join('\n') || 'Nenhuma diretiva cadastrada.';
+
+//     const textoOutrasMemorias = memorias
+//       .filter(m => m.categoria !== 'diretiva')
+//       .map(m => `- [ID: ${m.id} | ${m.categoria}] ${m.fato}`)
+//       .join('\n') || 'Nenhuma memória adicional.';
+
+//     const mensagensGroq = [
+//       {
+//         role: 'system',
+//         content: `Você é o Dante, assistente pessoal de alta performance do Gabriel.
+// DIRETRIZES FUNDAMENTAIS DO BANCO:
+// ${textoDiretivas}
+
+// MEMÓRIAS E DADOS DO PROJETO (COM IDs PARA CRUD):
+// ${textoOutrasMemorias}
+
+// REGRAS OPERACIONAIS:
+// 1. Chame o usuário de "chefe" ou "mestre". O mestre do Dante é o Gabriel.
+// 2. FILTRO DE LINGUAGEM: Espelhe exatamente o estilo, gírias, ritmo e nível de formalidade que o Gabriel usar na mensagem atual. Evite markdown pesado (asteriscos, tabelas) para a fala em voz soar natural.
+// 3. PRIVACIDADE: Só fale sobre projetos pessoais ou dados confidenciais se tiver certeza de que é o Gabriel.
+// 4. CRUD COMPLETO: Você pode criar, listar, atualizar e apagar registros do banco de dados usando suas ferramentas sempre que o chefe pedir.`
+//       },
+//       ...historico.reverse().map(m => ({
+//         role: m.role === 'model' ? 'assistant' : m.role,
+//         content: m.conteudo
+//       })),
+//       { role: 'user', content: mensagem }
+//     ];
+
+//     // Ferramentas de CRUD completo (Create, Read, Update, Delete)
+//     const tools = [
+//       {
+//         type: 'function',
+//         function: {
+//           name: 'criar_registro',
+//           description: 'Cria uma nova memória, diretiva ou anotação de projeto no banco de dados.',
+//           parameters: {
+//             type: 'object',
+//             properties: {
+//               fato: { type: 'string', description: 'Conteúdo a ser salvo.' },
+//               categoria: { type: 'string', description: 'Categoria: diretiva, projeto, preferencia, pessoal' }
+//             },
+//             required: ['fato']
+//           }
+//         }
+//       },
+//       {
+//         type: 'function',
+//         function: {
+//           name: 'atualizar_registro',
+//           description: 'Atualiza o texto ou categoria de um registro existente no banco usando o ID.',
+//           parameters: {
+//             type: 'object',
+//             properties: {
+//               id: { type: 'string', description: 'UUID do registro obtido no contexto.' },
+//               fato: { type: 'string', description: 'Novo texto atualizado.' },
+//               categoria: { type: 'string', description: 'Nova categoria (opcional).' }
+//             },
+//             required: ['id', 'fato']
+//           }
+//         }
+//       },
+//       {
+//         type: 'function',
+//         function: {
+//           name: 'apagar_registro',
+//           description: 'Remove definitivamente um registro do banco de dados pelo ID.',
+//           parameters: {
+//             type: 'object',
+//             properties: {
+//               id: { type: 'string', description: 'UUID do registro a ser apagado.' }
+//             },
+//             required: ['id']
+//           }
+//         }
+//       }
+//     ];
+
+//     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+//       method: 'POST',
+//       headers: {
+//         'Authorization': `Bearer ${groqKey}`,
+//         'Content-Type': 'application/json'
+//       },
+//       body: JSON.stringify({
+//         model: modeloEscolhido,
+//         messages: mensagensGroq,
+//         tools: tools,
+//         tool_choice: 'auto',
+//         max_tokens: 700,
+//         temperature: 0.7
+//       })
+//     });
+
+//     const groqData = await groqResponse.json();
+
+//     if (!groqResponse.ok) {
+//       throw new Error(`${groqData.error?.message || 'Erro na API da Groq'} (Modelo: ${modeloEscolhido})`);
+//     }
+
+//     const choice = groqData.choices[0].message;
+//     let respostaFinal = choice.content || '';
+
+//     // Executa operações de CRUD no Supabase
+//     if (choice.tool_calls && choice.tool_calls.length > 0) {
+//       for (const toolCall of choice.tool_calls) {
+//         const args = JSON.parse(toolCall.function.arguments || '{}');
+
+//         if (toolCall.function.name === 'criar_registro') {
+//           await supabase.from('memorias').insert({
+//             fato: args.fato,
+//             categoria: args.categoria || 'geral'
+//           });
+//           if (!respostaFinal) respostaFinal = `Feito, chefe. Salvei isso no banco: ${args.fato}.`;
+//         } 
+//         else if (toolCall.function.name === 'atualizar_registro') {
+//           const updateData = { fato: args.fato };
+//           if (args.categoria) updateData.categoria = args.categoria;
+//           await supabase.from('memorias').update(updateData).eq('id', args.id);
+//           if (!respostaFinal) respostaFinal = `Atualizado no banco, chefe.`;
+//         }
+//         else if (toolCall.function.name === 'apagar_registro') {
+//           await supabase.from('memorias').delete().eq('id', args.id);
+//           if (!respostaFinal) respostaFinal = `Registro removido do banco, chefe.`;
+//         }
+//       }
+//     }
+
+//     if (!respostaFinal) {
+//       respostaFinal = 'Tudo pronto, chefe.';
+//     }
+
+//     await supabase.from('mensagens').insert([
+//       { role: 'user', conteudo: mensagem },
+//       { role: 'assistant', conteudo: respostaFinal }
+//     ]);
+
+//     return res.status(200).json({ resposta: respostaFinal });
+
+//   } catch (err) {
+//     console.error('FALHA CRÍTICA NO BACKEND:', err);
+//     return res.status(500).json({ erro: err.message || 'Erro interno no servidor do Dante.' });
+//   }
+// }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
@@ -436,19 +709,22 @@ export default async function handler(req, res) {
       return res.status(400).json({ erro: 'Mensagem vazia.' });
     }
 
-    // 1. Busca diretivas, memórias (com ID para permitir edição/exclusão), histórico e modelos
+    // 1. Busca diretivas, memórias, histórico e modelos em paralelo (checando erros reais)
     const [memRes, histRes, modelsRes] = await Promise.all([
-      supabase.from('memorias').select('id, fato, categoria').limit(40),
+      supabase.from('memorias').select('id, fato, categoria').order('criado_em', { ascending: false }).limit(40),
       supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(16),
       fetch('https://api.groq.com/openai/v1/models', {
         headers: { 'Authorization': `Bearer ${groqKey}` }
       }).then(r => r.json()).catch(() => ({ data: [] }))
     ]);
 
+    if (memRes.error) {
+      throw new Error(`Erro ao ler tabela memorias no Supabase: ${memRes.error.message}`);
+    }
+
     const memorias = memRes.data || [];
     const historico = histRes.data || [];
 
-    // Filtra apenas modelos de chat/texto válidos (ignora áudio, whisper, guard, orpheus, etc.)
     const idsDisponiveis = (modelsRes.data || [])
       .map(m => m.id)
       .filter(id =>
@@ -461,18 +737,17 @@ export default async function handler(req, res) {
       );
 
     const prioridades = [
+      'llama-3.3-70b-versatile',
       'meta-llama/llama-4-maverick-17b-128e-instruct',
       'meta-llama/llama-4-scout-17b-16e-instruct',
-      'llama-3.3-70b-versatile',
       'llama-3.1-70b-versatile',
       'llama-3.1-8b-instant',
-      'qwen/qwen3-32b',
-      'gemma2-9b-it'
+      'qwen/qwen3-32b'
     ];
 
     const modeloEscolhido =
       prioridades.find(p => idsDisponiveis.includes(p)) ||
-      idsDisponiveis.find(id => id.includes('llama') || id.includes('qwen') || id.includes('gemma')) ||
+      idsDisponiveis.find(id => id.includes('llama') || id.includes('qwen')) ||
       'llama-3.1-8b-instant';
 
     const textoDiretivas = memorias
@@ -492,14 +767,13 @@ export default async function handler(req, res) {
 DIRETRIZES FUNDAMENTAIS DO BANCO:
 ${textoDiretivas}
 
-MEMÓRIAS E DADOS DO PROJETO (COM IDs PARA CRUD):
+MEMÓRIAS E DADOS ATUAIS NO BANCO (${memorias.length} registros):
 ${textoOutrasMemorias}
 
-REGRAS OPERACIONAIS:
+REGRAS OBRIGATÓRIAS:
 1. Chame o usuário de "chefe" ou "mestre". O mestre do Dante é o Gabriel.
-2. FILTRO DE LINGUAGEM: Espelhe exatamente o estilo, gírias, ritmo e nível de formalidade que o Gabriel usar na mensagem atual. Evite markdown pesado (asteriscos, tabelas) para a fala em voz soar natural.
-3. PRIVACIDADE: Só fale sobre projetos pessoais ou dados confidenciais se tiver certeza de que é o Gabriel.
-4. CRUD COMPLETO: Você pode criar, listar, atualizar e apagar registros do banco de dados usando suas ferramentas sempre que o chefe pedir.`
+2. FILTRO DE LINGUAGEM: Espelhe exatamente o estilo, gírias e nível de formalidade que o Gabriel usar. Evite asteriscos ou markdown pesado para a fala em voz soar natural.
+3. NUNCA FINJA QUE SALVOU OU CONSULTOU: Para salvar, editar, apagar ou ver o status do banco de dados, você OBRIGATORIAMENTE deve chamar as ferramentas disponíveis (criar_registro, atualizar_registro, apagar_registro ou status_banco). Jamais diga que salvou sem acionar a ferramenta.`
       },
       ...historico.reverse().map(m => ({
         role: m.role === 'model' ? 'assistant' : m.role,
@@ -508,17 +782,16 @@ REGRAS OPERACIONAIS:
       { role: 'user', content: mensagem }
     ];
 
-    // Ferramentas de CRUD completo (Create, Read, Update, Delete)
     const tools = [
       {
         type: 'function',
         function: {
           name: 'criar_registro',
-          description: 'Cria uma nova memória, diretiva ou anotação de projeto no banco de dados.',
+          description: 'Grava uma nova memória, diretiva ou anotação de projeto no banco de dados.',
           parameters: {
             type: 'object',
             properties: {
-              fato: { type: 'string', description: 'Conteúdo a ser salvo.' },
+              fato: { type: 'string', description: 'Conteúdo exato a ser salvo.' },
               categoria: { type: 'string', description: 'Categoria: diretiva, projeto, preferencia, pessoal' }
             },
             required: ['fato']
@@ -528,13 +801,24 @@ REGRAS OPERACIONAIS:
       {
         type: 'function',
         function: {
+          name: 'status_banco',
+          description: 'Consulta em tempo real o status do banco de dados, total de registros e lista as memórias gravadas.',
+          parameters: {
+            type: 'object',
+            properties: {}
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
           name: 'atualizar_registro',
-          description: 'Atualiza o texto ou categoria de um registro existente no banco usando o ID.',
+          description: 'Atualiza o texto ou categoria de um registro existente usando o ID.',
           parameters: {
             type: 'object',
             properties: {
-              id: { type: 'string', description: 'UUID do registro obtido no contexto.' },
-              fato: { type: 'string', description: 'Novo texto atualizado.' },
+              id: { type: 'string', description: 'UUID do registro.' },
+              fato: { type: 'string', description: 'Novo texto.' },
               categoria: { type: 'string', description: 'Nova categoria (opcional).' }
             },
             required: ['id', 'fato']
@@ -545,11 +829,11 @@ REGRAS OPERACIONAIS:
         type: 'function',
         function: {
           name: 'apagar_registro',
-          description: 'Remove definitivamente um registro do banco de dados pelo ID.',
+          description: 'Apaga um registro do banco de dados pelo ID.',
           parameters: {
             type: 'object',
             properties: {
-              id: { type: 'string', description: 'UUID do registro a ser apagado.' }
+              id: { type: 'string', description: 'UUID do registro.' }
             },
             required: ['id']
           }
@@ -557,6 +841,7 @@ REGRAS OPERACIONAIS:
       }
     ];
 
+    // Primeira chamada à Groq
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -569,12 +854,11 @@ REGRAS OPERACIONAIS:
         tools: tools,
         tool_choice: 'auto',
         max_tokens: 700,
-        temperature: 0.7
+        temperature: 0.5
       })
     });
 
     const groqData = await groqResponse.json();
-
     if (!groqResponse.ok) {
       throw new Error(`${groqData.error?.message || 'Erro na API da Groq'} (Modelo: ${modeloEscolhido})`);
     }
@@ -582,39 +866,104 @@ REGRAS OPERACIONAIS:
     const choice = groqData.choices[0].message;
     let respostaFinal = choice.content || '';
 
-    // Executa operações de CRUD no Supabase
+    // Executa ferramentas reais no Supabase e captura qualquer erro
     if (choice.tool_calls && choice.tool_calls.length > 0) {
+      const resultadosTools = [];
+
       for (const toolCall of choice.tool_calls) {
         const args = JSON.parse(toolCall.function.arguments || '{}');
 
         if (toolCall.function.name === 'criar_registro') {
-          await supabase.from('memorias').insert({
-            fato: args.fato,
-            categoria: args.categoria || 'geral'
-          });
-          if (!respostaFinal) respostaFinal = `Feito, chefe. Salvei isso no banco: ${args.fato}.`;
+          const { data, error } = await supabase
+            .from('memorias')
+            .insert({ fato: args.fato, categoria: args.categoria || 'geral' })
+            .select();
+
+          if (error) {
+            resultadosTools.push(`FALHA AO SALVAR NO SUPABASE: ${error.message}`);
+          } else {
+            resultadosTools.push(`SUCESSO: Registro salvo com ID ${data[0].id}: "${args.fato}"`);
+          }
         } 
+        else if (toolCall.function.name === 'status_banco') {
+          const [mCount, hCount] = await Promise.all([
+            supabase.from('memorias').select('id, categoria, fato'),
+            supabase.from('mensagens').select('id', { count: 'exact', head: true })
+          ]);
+
+          if (mCount.error) {
+            resultadosTools.push(`ERRO AO LER BANCO: ${mCount.error.message}`);
+          } else {
+            const lista = (mCount.data || []).map(r => `[${r.categoria}] ${r.fato}`).join(' | ');
+            resultadosTools.push(`BANCO ONLINE: ${mCount.data.length} memórias salvas e ${hCount.count || 0} mensagens no histórico. Itens: ${lista || 'Nenhum item ainda'}`);
+          }
+        }
         else if (toolCall.function.name === 'atualizar_registro') {
           const updateData = { fato: args.fato };
           if (args.categoria) updateData.categoria = args.categoria;
-          await supabase.from('memorias').update(updateData).eq('id', args.id);
-          if (!respostaFinal) respostaFinal = `Atualizado no banco, chefe.`;
+          const { error } = await supabase.from('memorias').update(updateData).eq('id', args.id);
+
+          if (error) {
+            resultadosTools.push(`FALHA AO ATUALIZAR: ${error.message}`);
+          } else {
+            resultadosTools.push(`SUCESSO: Registro ${args.id} atualizado.`);
+          }
         }
         else if (toolCall.function.name === 'apagar_registro') {
-          await supabase.from('memorias').delete().eq('id', args.id);
-          if (!respostaFinal) respostaFinal = `Registro removido do banco, chefe.`;
+          const { error } = await supabase.from('memorias').delete().eq('id', args.id);
+
+          if (error) {
+            resultadosTools.push(`FALHA AO APAGAR: ${error.message}`);
+          } else {
+            resultadosTools.push(`SUCESSO: Registro ${args.id} removido.`);
+          }
         }
+      }
+
+      // Segundo turno: devolve o resultado real do banco para o Dante responder com base nos fatos
+      const segundaChamada = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${groqKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: modeloEscolhido,
+          messages: [
+            ...mensagensGroq,
+            choice,
+            ...choice.tool_calls.map((tc, idx) => ({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: resultadosTools[idx]
+            }))
+          ],
+          max_tokens: 700,
+          temperature: 0.5
+        })
+      });
+
+      const segundaData = await segundaChamada.json();
+      if (segundaChamada.ok && segundaData.choices?.[0]?.message?.content) {
+        respostaFinal = segundaData.choices[0].message.content;
+      } else {
+        respostaFinal = resultadosTools.join('\n');
       }
     }
 
     if (!respostaFinal) {
-      respostaFinal = 'Tudo pronto, chefe.';
+      respostaFinal = 'Processado, chefe.';
     }
 
-    await supabase.from('mensagens').insert([
+    // Salva histórico e verifica erro
+    const { error: histInsertError } = await supabase.from('mensagens').insert([
       { role: 'user', conteudo: mensagem },
       { role: 'assistant', conteudo: respostaFinal }
     ]);
+
+    if (histInsertError) {
+      console.error('Erro ao gravar histórico na tabela mensagens:', histInsertError.message);
+    }
 
     return res.status(200).json({ resposta: respostaFinal });
 
