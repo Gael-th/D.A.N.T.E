@@ -810,6 +810,47 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
@@ -849,7 +890,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ erro: 'Mensagem vazia.' });
     }
 
-    // 1. Busca diretivas, memórias, histórico enxuto (6 mensagens) e lista de modelos da Groq em paralelo
+    // 1. Busca diretivas, memórias, histórico enxuto (6 mensagens) e modelos ativos na Groq
     const [memRes, histRes, modelsRes] = await Promise.all([
       supabase.from('memorias').select('id, fato, categoria').order('criado_em', { ascending: false }).limit(30),
       supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(6),
@@ -865,7 +906,7 @@ export default async function handler(req, res) {
     const memorias = memRes.data || [];
     const historico = histRes.data || [];
 
-    // Descobre automaticamente quais modelos de chat estão liberados na sua conta (ignorando áudio e restritos)
+    // Filtra apenas modelos de chat que suportam Tool Calling (bloqueia allam, whisper, tts, guard, compound)
     const idsDisponiveis = (modelsRes.data || [])
       .map(m => m.id)
       .filter(id =>
@@ -875,11 +916,30 @@ export default async function handler(req, res) {
         !id.includes('orpheus') &&
         !id.includes('arabic') &&
         !id.includes('playai') &&
-        !id.includes('audio')
+        !id.includes('audio') &&
+        !id.includes('allam') &&
+        !id.includes('compound') &&
+        (id.includes('llama') || id.includes('qwen') || id.includes('deepseek') || id.includes('gemma') || id.includes('mixtral'))
       );
 
-    // Pega o primeiro modelo válido retornado pela API da Groq para a sua chave
-    const modeloEscolhido = idsDisponiveis[0] || 'llama-3.3-70b-versatile';
+    // Ordena priorizando os melhores modelos compatíveis com ferramentas
+    const prioridades = [
+      'llama-3.3-70b-versatile',
+      'meta-llama/llama-4-scout-17b-16e-instruct',
+      'meta-llama/llama-4-maverick-17b-128e-instruct',
+      'qwen-qwq-32b',
+      'deepseek-r1-distill-llama-70b',
+      'gemma2-9b-it'
+    ];
+
+    const filaModelos = [
+      ...prioridades.filter(p => idsDisponiveis.includes(p)),
+      ...idsDisponiveis.filter(id => !prioridades.includes(id))
+    ];
+
+    if (filaModelos.length === 0) {
+      filaModelos.push('llama-3.3-70b-versatile');
+    }
 
     const textoDiretivas = memorias
       .filter(m => m.categoria === 'diretiva')
@@ -973,36 +1033,46 @@ REGRAS OBRIGATÓRIAS:
       }
     ];
 
-    // Função para chamar a Groq usando o modelo descoberto dinamicamente
+    let modeloAtivo = filaModelos[0];
+
+    // Testa cada modelo válido da fila até encontrar um que suporte tools e tenha cota disponível
     async function chamarGroq(mensagensParaEnviar, usarTools = true) {
-      const bodyReq = {
-        model: modeloEscolhido,
-        messages: mensagensParaEnviar,
-        max_tokens: 650,
-        temperature: 0.5
-      };
+      let ultimoErro = null;
 
-      if (usarTools) {
-        bodyReq.tools = tools;
-        bodyReq.tool_choice = 'auto';
+      for (const modeloAtual of filaModelos) {
+        const bodyReq = {
+          model: modeloAtual,
+          messages: mensagensParaEnviar,
+          max_tokens: 650,
+          temperature: 0.5
+        };
+
+        if (usarTools) {
+          bodyReq.tools = tools;
+          bodyReq.tool_choice = 'auto';
+        }
+
+        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${groqKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(bodyReq)
+        });
+
+        const data = await resp.json();
+
+        if (resp.ok) {
+          modeloAtivo = modeloAtual;
+          return data;
+        }
+
+        ultimoErro = `${data.error?.message || 'Erro na API da Groq'} (Modelo: ${modeloAtual})`;
+        // Continua o loop para o próximo modelo se der erro de tool_calling, rate limit (429) ou modelo indisponível
       }
 
-      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${groqKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(bodyReq)
-      });
-
-      const data = await resp.json();
-
-      if (!resp.ok) {
-        throw new Error(`${data.error?.message || 'Erro na API da Groq'} (Modelo utilizado: ${modeloEscolhido})`);
-      }
-
-      return data;
+      throw new Error(ultimoErro || 'Nenhum modelo compatível respondeu na Groq.');
     }
 
     // Primeira chamada à Groq
@@ -1097,7 +1167,7 @@ REGRAS OBRIGATÓRIAS:
       console.error('Erro ao gravar histórico na tabela mensagens:', histInsertError.message);
     }
 
-    return res.status(200).json({ resposta: respostaFinal });
+    return res.status(200).json({ resposta: respostaFinal, modelo: modeloAtivo });
 
   } catch (err) {
     console.error('FALHA CRÍTICA NO BACKEND:', err);
