@@ -36,291 +36,19 @@
 //       return res.status(400).json({ erro: 'Mensagem vazia.' });
 //     }
 
+//     // 1. Busca rápida em paralelo (com limite estrito para não travar)
 //     let memorias = [];
 //     let historico = [];
 
 //     try {
-//       const { data: memData } = await supabase.from('memorias').select('fato, categoria');
-//       if (memData) memorias = memData;
-//     } catch (e) {
-//       console.warn('Tabela memorias vazia ou inacessível.');
-//     }
-
-//     try {
-//       const { data: histData } = await supabase
-//         .from('mensagens')
-//         .select('role, conteudo')
-//         .order('criado_em', { ascending: false })
-//         .limit(15);
-//       if (histData) historico = histData;
-//     } catch (e) {
-//       console.warn('Tabela mensagens vazia ou inacessível.');
-//     }
-
-//     const textoMemorias = memorias.length > 0 
-//       ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
-//       : 'Nenhuma memória salva ainda.';
-
-//     const contextoChat = historico.reverse().map(m => ({
-//       role: m.role,
-//       parts: [{ text: m.conteudo }]
-//     }));
-//     contextoChat.push({ role: 'user', parts: [{ text: mensagem }] });
-
-//     const salvarMemoriaTool = {
-//       functionDeclarations: [{
-//         name: 'salvar_memoria',
-//         description: 'Salva um fato importante, preferência ou projeto permanente sobre o usuário.',
-//         parameters: {
-//           type: Type.OBJECT,
-//           properties: {
-//             fato: { type: Type.STRING, description: 'O fato a ser lembrado.' },
-//             categoria: { type: Type.STRING, description: 'Categoria: projeto, preferencia, agenda, pessoal' }
-//           },
-//           required: ['fato']
-//         }
-//       }]
-//     };
-
-//     const configGeracao = {
-//       systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-//       MEMÓRIAS PERMANENTES DO USUÁRIO:
-//       ${textoMemorias}
-//       Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
-//       tools: [salvarMemoriaTool]
-//     };
-
-//     // Sistema de fallback automático de modelos
-//     const modelosDisponiveis = ['gemini-3.8-flash', 'gemini-3.0-flash', 'gemini-2.5-flash-latest'];
-//     let response = null;
-//     let ultimoErro = null;
-
-//     for (const modelo of modelosDisponiveis) {
-//       try {
-//         response = await ai.models.generateContent({
-//           model: modelo,
-//           contents: contextoChat,
-//           config: configGeracao
-//         });
-//         if (response) break; // Se respondeu com sucesso, sai do loop
-//       } catch (errModelo) {
-//         ultimoErro = errModelo;
-//         console.warn(`Modelo ${modelo} falhou, tentando próximo...`);
-//       }
-//     }
-
-//     if (!response) {
-//       throw ultimoErro || new Error('Nenhum modelo do Gemini respondeu à requisição.');
-//     }
-
-//     if (response.functionCalls && response.functionCalls.length > 0) {
-//       const call = response.functionCalls[0];
-//       if (call.name === 'salvar_memoria') {
-//         try {
-//           await supabase.from('memorias').insert({
-//             fato: call.args.fato,
-//             categoria: call.args.categoria || 'geral'
-//           });
-//         } catch (err) {
-//           console.error('Erro ao salvar memória:', err.message);
-//         }
-//       }
-//     }
-
-//     const respostaFinal = response.text || 'Memória registrada, chefe.';
-
-//     try {
-//       await supabase.from('mensagens').insert([
-//         { role: 'user', conteudo: mensagem },
-//         { role: 'model', conteudo: respostaFinal }
+//       const [memRes, histRes] = await Promise.all([
+//         supabase.from('memorias').select('fato, categoria').limit(20),
+//         supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(5)
 //       ]);
-//     } catch (err) {
-//       console.error('Erro ao salvar histórico:', err.message);
-//     }
-
-//     return res.status(200).json({ resposta: respostaFinal });
-
-//   } catch (err) {
-//     console.error('FALHA CRÍTICA NO BACKEND:', err);
-//     return res.status(500).json({ erro: err.message || 'Erro interno no servidor do Dante.' });
-//   }
-// }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// import { GoogleGenAI, Type } from '@google/genai';
-// import { createClient } from '@supabase/supabase-js';
-
-// export default async function handler(req, res) {
-//   res.setHeader('Access-Control-Allow-Origin', '*');
-//   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-//   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-//   if (req.method === 'OPTIONS') return res.status(200).end();
-//   if (req.method !== 'POST') return res.status(405).json({ erro: 'Método não permitido' });
-
-//   const rawUrl = process.env.SUPABASE_URL;
-//   const rawKey = process.env.SUPABASE_KEY;
-//   const apiKey = process.env.GEMINI_API_KEY;
-
-//   if (!apiKey || !rawUrl || !rawKey) {
-//     return res.status(500).json({ 
-//       erro: 'Variáveis de ambiente ausentes na Vercel. Verifique GEMINI_API_KEY, SUPABASE_URL e SUPABASE_KEY.' 
-//     });
-//   }
-
-//   if (req.headers['authorization'] !== process.env.SENHA_MESTRA) {
-//     return res.status(401).json({ erro: 'Acesso negado: Senha incorreta' });
-//   }
-
-//   try {
-//     const ai = new GoogleGenAI({ apiKey });
-    
-//     const supabaseUrl = String(rawUrl).trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
-//     const supabaseKey = String(rawKey).trim().replace(/^['"]|['"]$/g, '');
-
-//     const supabase = createClient(supabaseUrl, supabaseKey);
-
-//     const { mensagem } = req.body;
-//     if (!mensagem) {
-//       return res.status(400).json({ erro: 'Mensagem vazia.' });
-//     }
-
-//     let memorias = [];
-//     let historico = [];
-
-//     try {
-//       const { data: memData } = await supabase.from('memorias').select('fato, categoria');
-//       if (memData) memorias = memData;
+//       memorias = memRes.data || [];
+//       historico = histRes.data || [];
 //     } catch (e) {
-//       console.warn('Tabela memorias vazia ou inacessível.');
-//     }
-
-//     try {
-//       const { data: histData } = await supabase
-//         .from('mensagens')
-//         .select('role, conteudo')
-//         .order('criado_em', { ascending: false })
-//         .limit(15);
-//       if (histData) historico = histData;
-//     } catch (e) {
-//       console.warn('Tabela mensagens vazia ou inacessível.');
+//       console.warn('Aviso ao consultar Supabase (continuando sem histórico completo).');
 //     }
 
 //     const textoMemorias = memorias.length > 0 
@@ -348,348 +76,50 @@
 //       }]
 //     };
 
-//     const configGeracao = {
-//       systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-//       MEMÓRIAS PERMANENTES DO USUÁRIO:
-//       ${textoMemorias}
-//       Sempre que o Gabriel compartilhar algo relevante sobre projetos, preferências ou pedir para lembrar de algo, chame a função 'salvar_memoria'.`,
-//       tools: [salvarMemoriaTool]
-//     };
-
-//     // SISTEMA DE TENTATIVAS REPETIDAS (RETRY) PARA ERROS 503 DE SOBRECARGA
-//     let response = null;
-//     let ultimoErro = null;
-//     const maxTentativas = 3;
-
-//     for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
-//       try {
-//         response = await ai.models.generateContent({
-//           model: 'gemini-3.8-flash',
-//           contents: contextoChat,
-//           config: configGeracao
-//         });
-//         if (response) break; // Sucesso! Sai do loop
-//       } catch (errApi) {
-//         ultimoErro = errApi;
-//         console.warn(`Tentativa ${tentativa} falhou (possível sobrecarga 503). Aguardando para tentar novamente...`);
-//         // Aguarda 1.5 segundo antes de tentar de novo
-//         await new Promise(resolve => setTimeout(resolve, 1500));
+//     // 2. Chamada direta ao Gemini 3.8 Flash com limite de tokens compacto para resposta imediata
+//     const response = await ai.models.generateContent({
+//       model: 'gemini-3.8-flash',
+//       contents: contextoChat,
+//       config: {
+//         systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
+//         MEMÓRIAS PERMANENTES:
+//         ${textoMemorias}
+//         Sempre que o Gabriel compartilhar algo relevante, chame a função 'salvar_memoria'.`,
+//         tools: [salvarMemoriaTool],
+//         maxOutputTokens: 500
 //       }
-//     }
-
-//     if (!response) {
-//       throw ultimoErro || new Error('Os servidores do Gemini estão temporariamente congestionados. Tente enviar a mensagem novamente em alguns segundos.');
-//     }
-
-//     if (response.functionCalls && response.functionCalls.length > 0) {
-//       const call = response.functionCalls[0];
-//       if (call.name === 'salvar_memoria') {
-//         try {
-//           await supabase.from('memorias').insert({
-//             fato: call.args.fato,
-//             categoria: call.args.categoria || 'geral'
-//           });
-//         } catch (err) {
-//           console.error('Erro ao salvar memória:', err.message);
-//         }
-//       }
-//     }
-
-//     const respostaFinal = response.text || 'Memória registrada, chefe.';
-
-//     try {
-//       await supabase.from('mensagens').insert([
-//         { role: 'user', conteudo: mensagem },
-//         { role: 'model', conteudo: respostaFinal }
-//       ]);
-//     } catch (err) {
-//       console.error('Erro ao salvar histórico:', err.message);
-//     }
-
-//     return res.status(200).json({ resposta: respostaFinal });
-
-//   } catch (err) {
-//     console.error('FALHA CRÍTICA NO BACKEND:', err);
-//     return res.status(500).json({ erro: err.message || 'Erro interno no servidor do Dante.' });
-//   }
-// }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// import { GoogleGenAI, Type } from '@google/genai';
-// import { createClient } from '@supabase/supabase-js';
-
-// export default async function handler(req, res) {
-//   res.setHeader('Access-Control-Allow-Origin', '*');
-//   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-//   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-//   if (req.method === 'OPTIONS') return res.status(200).end();
-//   if (req.method !== 'POST') return res.status(405).json({ erro: 'Método não permitido' });
-
-//   const rawUrl = process.env.SUPABASE_URL;
-//   const rawKey = process.env.SUPABASE_KEY;
-//   const apiKey = process.env.GEMINI_API_KEY;
-
-//   if (!apiKey || !rawUrl || !rawKey) {
-//     return res.status(500).json({ 
-//       erro: 'Variáveis de ambiente ausentes na Vercel. Verifique GEMINI_API_KEY, SUPABASE_URL e SUPABASE_KEY.' 
 //     });
-//   }
-
-//   if (req.headers['authorization'] !== process.env.SENHA_MESTRA) {
-//     return res.status(401).json({ erro: 'Acesso negado: Senha incorreta' });
-//   }
-
-//   try {
-//     const ai = new GoogleGenAI({ apiKey });
-    
-//     const supabaseUrl = String(rawUrl).trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
-//     const supabaseKey = String(rawKey).trim().replace(/^['"]|['"]$/g, '');
-
-//     const supabase = createClient(supabaseUrl, supabaseKey);
-
-//     const { mensagem } = req.body;
-//     if (!mensagem) {
-//       return res.status(400).json({ erro: 'Mensagem vazia.' });
-//     }
-
-//     let memorias = [];
-//     let historico = [];
-
-//     try {
-//       const { data: memData } = await supabase.from('memorias').select('fato, categoria');
-//       if (memData) memorias = memData;
-//     } catch (e) {
-//       console.warn('Aviso: Tabela memorias indisponível.');
-//     }
-
-//     try {
-//       const { data: histData } = await supabase
-//         .from('mensagens')
-//         .select('role, conteudo')
-//         .order('criado_em', { ascending: false })
-//         .limit(10);
-//       if (histData) historico = histData;
-//     } catch (e) {
-//       console.warn('Aviso: Tabela mensagens indisponível.');
-//     }
-
-//     const textoMemorias = memorias.length > 0 
-//       ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
-//       : 'Nenhuma memória salva ainda.';
-
-//     const contextoChat = historico.reverse().map(m => ({
-//       role: m.role,
-//       parts: [{ text: m.conteudo }]
-//     }));
-//     contextoChat.push({ role: 'user', parts: [{ text: mensagem }] });
-
-//     const salvarMemoriaTool = {
-//       functionDeclarations: [{
-//         name: 'salvar_memoria',
-//         description: 'Salva um fato importante, preferência ou projeto permanente sobre o usuário.',
-//         parameters: {
-//           type: Type.OBJECT,
-//           properties: {
-//             fato: { type: Type.STRING, description: 'O fato a ser lembrado.' },
-//             categoria: { type: Type.STRING, description: 'Categoria: projeto, preferencia, agenda, pessoal' }
-//           },
-//           required: ['fato']
-//         }
-//       }]
-//     };
-
-//     const configGeracao = {
-//       systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-//       MEMÓRIAS PERMANENTES:
-//       ${textoMemorias}
-//       Sempre que o Gabriel compartilhar algo relevante, chame a função 'salvar_memoria'.`,
-//       tools: [salvarMemoriaTool],
-//       maxOutputTokens: 800
-//     };
-
-//     // TENTATIVAS AUTOMÁTICAS: Se o 3.8-flash der pico de demanda (503), tenta de novo em instantes
-//     let response = null;
-//     let ultimoErro = null;
-//     const maxTentativas = 3;
-
-//     for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
-//       try {
-//         response = await ai.models.generateContent({
-//           model: 'gemini-3.8-flash',
-//           contents: contextoChat,
-//           config: configGeracao
-//         });
-//         if (response) break;
-//       } catch (errApi) {
-//         ultimoErro = errApi;
-//         console.warn(`Tentativa ${tentativa} falhou. Aguardando para reenviar...`);
-//         await new Promise(resolve => setTimeout(resolve, 2000));
-//       }
-//     }
-
-//     if (!response) {
-//       throw ultimoErro || new Error('Os servidores estão com alta demanda no momento. Tente novamente em alguns segundos.');
-//     }
-
-//     if (response.functionCalls && response.functionCalls.length > 0) {
-//       const call = response.functionCalls[0];
-//       if (call.name === 'salvar_memoria') {
-//         try {
-//           await supabase.from('memorias').insert({
-//             fato: call.args.fato,
-//             categoria: call.args.categoria || 'geral'
-//           });
-//         } catch (err) {
-//           console.error('Erro ao salvar memória:', err.message);
-//         }
-//       }
-//     }
 
 //     const respostaFinal = response.text || 'Processado, chefe.';
 
-//     try {
-//       await supabase.from('mensagens').insert([
-//         { role: 'user', conteudo: mensagem },
-//         { role: 'model', conteudo: respostaFinal }
-//       ]);
-//     } catch (err) {
-//       console.error('Erro ao salvar histórico:', err.message);
+//     // 3. Responde imediatamente ao usuário (zero delay de espera do banco)
+//     res.status(200).json({ resposta: respostaFinal });
+
+//     // 4. Salva as mensagens e tool calls em segundo plano (após a resposta já ter sido enviada)
+//     if (response.functionCalls && response.functionCalls.length > 0) {
+//       const call = response.functionCalls[0];
+//       if (call.name === 'salvar_memoria') {
+//         supabase.from('memorias').insert({
+//           fato: call.args.fato,
+//           categoria: call.args.categoria || 'geral'
+//         }).catch(() => {});
+//       }
 //     }
 
-//     return res.status(200).json({ resposta: respostaFinal });
+//     supabase.from('mensagens').insert([
+//       { role: 'user', conteudo: mensagem },
+//       { role: 'model', conteudo: respostaFinal }
+//     ]).catch(() => {});
 
 //   } catch (err) {
 //     console.error('FALHA CRÍTICA NO BACKEND:', err);
-//     return res.status(500).json({ erro: err.message || 'Erro interno no servidor do Dante.' });
+//     if (!res.headersSent) {
+//       return res.status(500).json({ erro: err.message || 'Erro interno no servidor do Dante.' });
+//     }
 //   }
 // }
 
 
-
-
-
-
-
-
-
-
-
-
-
-import { GoogleGenAI, Type } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
@@ -702,11 +132,11 @@ export default async function handler(req, res) {
 
   const rawUrl = process.env.SUPABASE_URL;
   const rawKey = process.env.SUPABASE_KEY;
-  const apiKey = process.env.GEMINI_API_KEY;
+  const groqKey = process.env.GROQ_API_KEY;
 
-  if (!apiKey || !rawUrl || !rawKey) {
+  if (!groqKey || !rawUrl || !rawKey) {
     return res.status(500).json({ 
-      erro: 'Variáveis de ambiente ausentes na Vercel. Verifique GEMINI_API_KEY, SUPABASE_URL e SUPABASE_KEY.' 
+      erro: 'Variáveis ausentes na Vercel. Verifique GROQ_API_KEY, SUPABASE_URL e SUPABASE_KEY.' 
     });
   }
 
@@ -715,11 +145,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey });
-    
     const supabaseUrl = String(rawUrl).trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
     const supabaseKey = String(rawKey).trim().replace(/^['"]|['"]$/g, '');
-
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     const { mensagem } = req.body;
@@ -727,85 +154,116 @@ export default async function handler(req, res) {
       return res.status(400).json({ erro: 'Mensagem vazia.' });
     }
 
-    // 1. Busca rápida em paralelo (com limite estrito para não travar)
+    // 1. Busca memórias permanentes e as últimas 16 mensagens em paralelo
     let memorias = [];
     let historico = [];
 
     try {
       const [memRes, histRes] = await Promise.all([
-        supabase.from('memorias').select('fato, categoria').limit(20),
-        supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(5)
+        supabase.from('memorias').select('fato, categoria').limit(30),
+        supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(16)
       ]);
       memorias = memRes.data || [];
       historico = histRes.data || [];
     } catch (e) {
-      console.warn('Aviso ao consultar Supabase (continuando sem histórico completo).');
+      console.warn('Aviso ao consultar Supabase:', e.message);
     }
 
     const textoMemorias = memorias.length > 0 
       ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
       : 'Nenhuma memória salva ainda.';
 
-    const contextoChat = historico.reverse().map(m => ({
-      role: m.role,
-      parts: [{ text: m.conteudo }]
-    }));
-    contextoChat.push({ role: 'user', parts: [{ text: mensagem }] });
+    // Formato padrão OpenAI/Groq (converte 'model' do banco antigo para 'assistant')
+    const mensagensGroq = [
+      {
+        role: 'system',
+        content: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico, natural para fala em voz alta (evite markdown pesado como asteriscos ou tabelas) e objetivo.
+MEMÓRIAS PERMANENTES DO USUÁRIO:
+${textoMemorias}
+Sempre que o Gabriel compartilhar um fato importante, preferência, projeto ou pedir para lembrar de algo, use a ferramenta 'salvar_memoria'.`
+      },
+      ...historico.reverse().map(m => ({
+        role: m.role === 'model' ? 'assistant' : m.role,
+        content: m.conteudo
+      })),
+      { role: 'user', content: mensagem }
+    ];
 
-    const salvarMemoriaTool = {
-      functionDeclarations: [{
-        name: 'salvar_memoria',
-        description: 'Salva um fato importante, preferência ou projeto permanente sobre o usuário.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            fato: { type: Type.STRING, description: 'O fato a ser lembrado.' },
-            categoria: { type: Type.STRING, description: 'Categoria: projeto, preferencia, agenda, pessoal' }
-          },
-          required: ['fato']
+    const tools = [
+      {
+        type: 'function',
+        function: {
+          name: 'salvar_memoria',
+          description: 'Salva um fato importante, preferência ou projeto permanente sobre o usuário no banco de dados.',
+          parameters: {
+            type: 'object',
+            properties: {
+              fato: { type: 'string', description: 'O fato a ser lembrado de forma clara.' },
+              categoria: { type: 'string', description: 'Categoria: projeto, preferencia, agenda, pessoal' }
+            },
+            required: ['fato']
+          }
         }
-      }]
-    };
-
-    // 2. Chamada direta ao Gemini 3.8 Flash com limite de tokens compacto para resposta imediata
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: contextoChat,
-      config: {
-        systemInstruction: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico e objetivo.
-        MEMÓRIAS PERMANENTES:
-        ${textoMemorias}
-        Sempre que o Gabriel compartilhar algo relevante, chame a função 'salvar_memoria'.`,
-        tools: [salvarMemoriaTool],
-        maxOutputTokens: 500
       }
+    ];
+
+    // 2. Chamada ultrarrápida para a API da Groq
+    const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${groqKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: mensagensGroq,
+        tools: tools,
+        tool_choice: 'auto',
+        max_tokens: 600,
+        temperature: 0.6
+      })
     });
 
-    const respostaFinal = response.text || 'Processado, chefe.';
+    const groqData = await groqResponse.json();
 
-    // 3. Responde imediatamente ao usuário (zero delay de espera do banco)
-    res.status(200).json({ resposta: respostaFinal });
+    if (!groqResponse.ok) {
+      throw new Error(groqData.error?.message || 'Erro na API da Groq');
+    }
 
-    // 4. Salva as mensagens e tool calls em segundo plano (após a resposta já ter sido enviada)
-    if (response.functionCalls && response.functionCalls.length > 0) {
-      const call = response.functionCalls[0];
-      if (call.name === 'salvar_memoria') {
-        supabase.from('memorias').insert({
-          fato: call.args.fato,
-          categoria: call.args.categoria || 'geral'
-        }).catch(() => {});
+    const choice = groqData.choices[0].message;
+    let respostaFinal = choice.content || '';
+
+    // 3. Se a IA decidiu salvar uma memória, executa no Supabase e gera a confirmação verbal
+    if (choice.tool_calls && choice.tool_calls.length > 0) {
+      for (const toolCall of choice.tool_calls) {
+        if (toolCall.function.name === 'salvar_memoria') {
+          const args = JSON.parse(toolCall.function.arguments);
+          await supabase.from('memorias').insert({
+            fato: args.fato,
+            categoria: args.categoria || 'geral'
+          });
+
+          if (!respostaFinal) {
+            respostaFinal = `Anotado, Gabriel. Guardei isso na minha memória permanente: ${args.fato}.`;
+          }
+        }
       }
     }
 
-    supabase.from('mensagens').insert([
+    if (!respostaFinal) {
+      respostaFinal = 'Processado, chefe.';
+    }
+
+    // 4. Salva o histórico ANTES de enviar o status 200 (com a Groq sobra muito tempo)
+    await supabase.from('mensagens').insert([
       { role: 'user', conteudo: mensagem },
-      { role: 'model', conteudo: respostaFinal }
-    ]).catch(() => {});
+      { role: 'assistant', conteudo: respostaFinal }
+    ]);
+
+    return res.status(200).json({ resposta: respostaFinal });
 
   } catch (err) {
     console.error('FALHA CRÍTICA NO BACKEND:', err);
-    if (!res.headersSent) {
-      return res.status(500).json({ erro: err.message || 'Erro interno no servidor do Dante.' });
-    }
+    return res.status(500).json({ erro: err.message || 'Erro interno no servidor do Dante.' });
   }
 }
