@@ -174,6 +174,234 @@
 
 
 
+// import { createClient } from '@supabase/supabase-js';
+
+// export default async function handler(req, res) {
+//   res.setHeader('Access-Control-Allow-Origin', '*');
+//   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+//   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+//   if (req.method === 'OPTIONS') return res.status(200).end();
+//   if (req.method !== 'POST') return res.status(405).json({ erro: 'Método não permitido' });
+
+//   const rawUrl = process.env.SUPABASE_URL;
+//   const rawKey = process.env.SUPABASE_KEY;
+//   const groqKey = process.env.GROQ_API_KEY;
+
+//   if (!groqKey || !rawUrl || !rawKey) {
+//     return res.status(500).json({ 
+//       erro: 'Variáveis ausentes na Vercel. Verifique GROQ_API_KEY, SUPABASE_URL e SUPABASE_KEY.' 
+//     });
+//   }
+
+//   if (req.headers['authorization'] !== process.env.SENHA_MESTRA) {
+//     return res.status(401).json({ erro: 'Acesso negado: Senha incorreta' });
+//   }
+
+//   try {
+//     const supabaseUrl = String(rawUrl).trim().replace(/^['"]|['"]$/g, '').replace(/\/+$/, '');
+//     const supabaseKey = String(rawKey).trim().replace(/^['"]|['"]$/g, '');
+//     const supabase = createClient(supabaseUrl, supabaseKey);
+
+//     const { mensagem } = req.body;
+//     if (!mensagem) {
+//       return res.status(400).json({ erro: 'Mensagem vazia.' });
+//     }
+
+//     // 1. Busca memórias, histórico e modelos ativos da Groq em paralelo
+//     const [memRes, histRes, modelsRes] = await Promise.all([
+//       supabase.from('memorias').select('fato, categoria').limit(30),
+//       supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(16),
+//       fetch('https://api.groq.com/openai/v1/models', {
+//         headers: { 'Authorization': `Bearer ${groqKey}` }
+//       }).then(r => r.json()).catch(() => ({ data: [] }))
+//     ]);
+
+//     const memorias = memRes.data || [];
+//     const historico = histRes.data || [];
+
+//     // Escolhe automaticamente o melhor modelo de texto ativo na sua conta
+//     const idsDisponiveis = (modelsRes.data || [])
+//       .map(m => m.id)
+//       .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts'));
+
+//     const prioridades = [
+//       'meta-llama/llama-4-maverick-17b-128e-instruct',
+//       'meta-llama/llama-4-scout-17b-16e-instruct',
+//       'llama-3.3-70b-versatile',
+//       'llama-3.1-70b-versatile',
+//       'llama-3.1-8b-instant',
+//       'qwen/qwen3-32b'
+//     ];
+
+//     const modeloEscolhido =
+//       prioridades.find(p => idsDisponiveis.includes(p)) ||
+//       idsDisponiveis.find(id => id.includes('llama') || id.includes('qwen') || id.includes('gemma')) ||
+//       idsDisponiveis[0] ||
+//       'llama-3.1-8b-instant';
+
+//     const textoMemorias = memorias.length > 0 
+//       ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
+//       : 'Nenhuma memória salva ainda.';
+
+//     const mensagensGroq = [
+//       {
+//         role: 'system',
+//         content: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico, natural para fala em voz alta (evite markdown pesado como asteriscos ou tabelas) e objetivo.
+// MEMÓRIAS PERMANENTES DO USUÁRIO:
+// ${textoMemorias}
+// Sempre que o Gabriel compartilhar um fato importante, preferência, projeto ou pedir para lembrar de algo, use a ferramenta 'salvar_memoria'.`
+//       },
+//       ...historico.reverse().map(m => ({
+//         role: m.role === 'model' ? 'assistant' : m.role,
+//         content: m.conteudo
+//       })),
+//       { role: 'user', content: mensagem }
+//     ];
+
+//     const tools = [
+//       {
+//         type: 'function',
+//         function: {
+//           name: 'salvar_memoria',
+//           description: 'Salva um fato importante, preferência ou projeto permanente sobre o usuário no banco de dados.',
+//           parameters: {
+//             type: 'object',
+//             properties: {
+//               fato: { type: 'string', description: 'O fato a ser lembrado de forma clara.' },
+//               categoria: { type: 'string', description: 'Categoria: projeto, preferencia, agenda, pessoal' }
+//             },
+//             required: ['fato']
+//           }
+//         }
+//       }
+//     ];
+
+//     // 2. Chamada para a Groq usando o modelo detectado automaticamente
+//     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+//       method: 'POST',
+//       headers: {
+//         'Authorization': `Bearer ${groqKey}`,
+//         'Content-Type': 'application/json'
+//       },
+//       body: JSON.stringify({
+//         model: modeloEscolhido,
+//         messages: mensagensGroq,
+//         tools: tools,
+//         tool_choice: 'auto',
+//         max_tokens: 600,
+//         temperature: 0.6
+//       })
+//     });
+
+//     const groqData = await groqResponse.json();
+
+//     if (!groqResponse.ok) {
+//       throw new Error(`${groqData.error?.message || 'Erro na API da Groq'} (Modelo tentado: ${modeloEscolhido})`);
+//     }
+
+//     const choice = groqData.choices[0].message;
+//     let respostaFinal = choice.content || '';
+
+//     // 3. Executa tool call de memória se acionada
+//     if (choice.tool_calls && choice.tool_calls.length > 0) {
+//       for (const toolCall of choice.tool_calls) {
+//         if (toolCall.function.name === 'salvar_memoria') {
+//           const args = JSON.parse(toolCall.function.arguments);
+//           await supabase.from('memorias').insert({
+//             fato: args.fato,
+//             categoria: args.categoria || 'geral'
+//           });
+
+//           if (!respostaFinal) {
+//             respostaFinal = `Anotado, Gabriel. Guardei isso na minha memória permanente: ${args.fato}.`;
+//           }
+//         }
+//       }
+//     }
+
+//     if (!respostaFinal) {
+//       respostaFinal = 'Processado, chefe.';
+//     }
+
+//     // 4. Salva o histórico completo antes de encerrar a requisição
+//     await supabase.from('mensagens').insert([
+//       { role: 'user', conteudo: mensagem },
+//       { role: 'assistant', conteudo: respostaFinal }
+//     ]);
+
+//     return res.status(200).json({ resposta: respostaFinal });
+
+//   } catch (err) {
+//     console.error('FALHA CRÍTICA NO BACKEND:', err);
+//     return res.status(500).json({ erro: err.message || 'Erro interno no servidor do Dante.' });
+//   }
+// }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
@@ -208,9 +436,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ erro: 'Mensagem vazia.' });
     }
 
-    // 1. Busca memórias, histórico e modelos ativos da Groq em paralelo
+    // 1. Busca diretivas, memórias, histórico e modelos da Groq em paralelo
     const [memRes, histRes, modelsRes] = await Promise.all([
-      supabase.from('memorias').select('fato, categoria').limit(30),
+      supabase.from('memorias').select('fato, categoria').limit(40),
       supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(16),
       fetch('https://api.groq.com/openai/v1/models', {
         headers: { 'Authorization': `Bearer ${groqKey}` }
@@ -220,14 +448,11 @@ export default async function handler(req, res) {
     const memorias = memRes.data || [];
     const historico = histRes.data || [];
 
-    // Escolhe automaticamente o melhor modelo de texto ativo na sua conta
     const idsDisponiveis = (modelsRes.data || [])
       .map(m => m.id)
       .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts'));
 
     const prioridades = [
-      'meta-llama/llama-4-maverick-17b-128e-instruct',
-      'meta-llama/llama-4-scout-17b-16e-instruct',
       'llama-3.3-70b-versatile',
       'llama-3.1-70b-versatile',
       'llama-3.1-8b-instant',
@@ -236,21 +461,34 @@ export default async function handler(req, res) {
 
     const modeloEscolhido =
       prioridades.find(p => idsDisponiveis.includes(p)) ||
-      idsDisponiveis.find(id => id.includes('llama') || id.includes('qwen') || id.includes('gemma')) ||
       idsDisponiveis[0] ||
       'llama-3.1-8b-instant';
 
-    const textoMemorias = memorias.length > 0 
-      ? memorias.map(m => `- [${m.categoria}] ${m.fato}`).join('\n') 
-      : 'Nenhuma memória salva ainda.';
+    const textoDiretivas = memorias
+      .filter(m => m.categoria === 'diretiva')
+      .map(m => `- ${m.fato}`)
+      .join('\n');
+
+    const textoOutrasMemorias = memorias
+      .filter(m => m.categoria !== 'diretiva')
+      .map(m => `- [${m.categoria}] ${m.fato}`)
+      .join('\n');
 
     const mensagensGroq = [
       {
         role: 'system',
-        content: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. Seja direto, técnico, natural para fala em voz alta (evite markdown pesado como asteriscos ou tabelas) e objetivo.
-MEMÓRIAS PERMANENTES DO USUÁRIO:
-${textoMemorias}
-Sempre que o Gabriel compartilhar um fato importante, preferência, projeto ou pedir para lembrar de algo, use a ferramenta 'salvar_memoria'.`
+        content: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. 
+DIRETRIZES FUNDAMENTAIS DO SEU COMPORTAMENTO:
+${textoDiretivas}
+
+OUTRAS MEMÓRIAS E DADOS SALVOS:
+${textoOutrasMemorias}
+
+REGRAS DE OURO:
+1. Trate sempre o usuário como "chefe" ou "mestre". O criador dele é o Gabriel.
+2. FILTRO DE LINGUAGEM: Analise a gíria, a formalidade, o ritmo e o vocabulário que o Gabriel está usando na mensagem atual e espelhe exatamente o estilo dele na resposta.
+3. SEGURANÇA E PRIVACIDADE: Só discuta detalhes de vida pessoal, projetos confidenciais ou dados protegidos se tiver certeza absoluta que é o Gabriel falando (o que é validado pela senha mestra da API). Caso haja qualquer dúvida, exija confirmação.
+4. CRUD DO PROJETO: Você tem ferramentas para gerenciar o banco de dados (criar, ler, atualizar ou apagar memórias e registros). Use-as ativamente quando solicitado.`
       },
       ...historico.reverse().map(m => ({
         role: m.role === 'model' ? 'assistant' : m.role,
@@ -259,25 +497,38 @@ Sempre que o Gabriel compartilhar um fato importante, preferência, projeto ou p
       { role: 'user', content: mensagem }
     ];
 
+    // Ferramentas de CRUD e Memória para o Dante manipular o banco de dados
     const tools = [
       {
         type: 'function',
         function: {
           name: 'salvar_memoria',
-          description: 'Salva um fato importante, preferência ou projeto permanente sobre o usuário no banco de dados.',
+          description: 'Salva um novo fato, preferência ou diretiva permanente no banco de dados.',
           parameters: {
             type: 'object',
             properties: {
-              fato: { type: 'string', description: 'O fato a ser lembrado de forma clara.' },
-              categoria: { type: 'string', description: 'Categoria: projeto, preferencia, agenda, pessoal' }
+              fato: { type: 'string', description: 'O fato ou diretiva a ser lembrada.' },
+              categoria: { type: 'string', description: 'Categoria: diretiva, projeto, preferencia, pessoal' }
             },
             required: ['fato']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'consultar_banco',
+          description: 'Consulta registros na tabela de memórias ou histórico para buscar dados do projeto.',
+          parameters: {
+            type: 'object',
+            properties: {
+              termo: { type: 'string', description: 'Termo para filtrar nas memórias.' }
+            }
           }
         }
       }
     ];
 
-    // 2. Chamada para a Groq usando o modelo detectado automaticamente
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -289,42 +540,45 @@ Sempre que o Gabriel compartilhar um fato importante, preferência, projeto ou p
         messages: mensagensGroq,
         tools: tools,
         tool_choice: 'auto',
-        max_tokens: 600,
-        temperature: 0.6
+        max_tokens: 700,
+        temperature: 0.7
       })
     });
 
     const groqData = await groqResponse.json();
 
     if (!groqResponse.ok) {
-      throw new Error(`${groqData.error?.message || 'Erro na API da Groq'} (Modelo tentado: ${modeloEscolhido})`);
+      throw new Error(`${groqData.error?.message || 'Erro na API da Groq'} (Modelo: ${modeloEscolhido})`);
     }
 
     const choice = groqData.choices[0].message;
     let respostaFinal = choice.content || '';
 
-    // 3. Executa tool call de memória se acionada
+    // Executa tool calls (CRUD / Memória) se acionadas pela IA
     if (choice.tool_calls && choice.tool_calls.length > 0) {
       for (const toolCall of choice.tool_calls) {
+        const args = JSON.parse(toolCall.function.arguments || '{}');
+
         if (toolCall.function.name === 'salvar_memoria') {
-          const args = JSON.parse(toolCall.function.arguments);
           await supabase.from('memorias').insert({
             fato: args.fato,
             categoria: args.categoria || 'geral'
           });
-
           if (!respostaFinal) {
-            respostaFinal = `Anotado, Gabriel. Guardei isso na minha memória permanente: ${args.fato}.`;
+            respostaFinal = `Feito, chefe. Salvei essa diretiva no sistema: "${args.fato}".`;
           }
+        } 
+        else if (toolCall.function.name === 'consultar_banco') {
+          const { data } = await supabase.from('memorias').select('fato, categoria').limit(10);
+          respostaFinal = `Aqui estão os registros encontrados no banco, chefe:\n` + JSON.stringify(data, null, 2);
         }
       }
     }
 
     if (!respostaFinal) {
-      respostaFinal = 'Processado, chefe.';
+      respostaFinal = 'Tudo pronto, chefe.';
     }
 
-    // 4. Salva o histórico completo antes de encerrar a requisição
     await supabase.from('mensagens').insert([
       { role: 'user', conteudo: mensagem },
       { role: 'assistant', conteudo: respostaFinal }
