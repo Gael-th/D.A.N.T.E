@@ -436,9 +436,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ erro: 'Mensagem vazia.' });
     }
 
-    // 1. Busca diretivas, memórias, histórico e modelos da Groq em paralelo
+    // 1. Busca diretivas, memórias (com ID para permitir edição/exclusão), histórico e modelos
     const [memRes, histRes, modelsRes] = await Promise.all([
-      supabase.from('memorias').select('fato, categoria').limit(40),
+      supabase.from('memorias').select('id, fato, categoria').limit(40),
       supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(16),
       fetch('https://api.groq.com/openai/v1/models', {
         headers: { 'Authorization': `Bearer ${groqKey}` }
@@ -448,47 +448,58 @@ export default async function handler(req, res) {
     const memorias = memRes.data || [];
     const historico = histRes.data || [];
 
+    // Filtra apenas modelos de chat/texto válidos (ignora áudio, whisper, guard, orpheus, etc.)
     const idsDisponiveis = (modelsRes.data || [])
       .map(m => m.id)
-      .filter(id => !id.includes('whisper') && !id.includes('guard') && !id.includes('tts'));
+      .filter(id =>
+        !id.includes('whisper') &&
+        !id.includes('guard') &&
+        !id.includes('tts') &&
+        !id.includes('orpheus') &&
+        !id.includes('arabic') &&
+        !id.includes('playai')
+      );
 
     const prioridades = [
+      'meta-llama/llama-4-maverick-17b-128e-instruct',
+      'meta-llama/llama-4-scout-17b-16e-instruct',
       'llama-3.3-70b-versatile',
       'llama-3.1-70b-versatile',
       'llama-3.1-8b-instant',
-      'qwen/qwen3-32b'
+      'qwen/qwen3-32b',
+      'gemma2-9b-it'
     ];
 
     const modeloEscolhido =
       prioridades.find(p => idsDisponiveis.includes(p)) ||
-      idsDisponiveis[0] ||
+      idsDisponiveis.find(id => id.includes('llama') || id.includes('qwen') || id.includes('gemma')) ||
       'llama-3.1-8b-instant';
 
     const textoDiretivas = memorias
       .filter(m => m.categoria === 'diretiva')
-      .map(m => `- ${m.fato}`)
-      .join('\n');
+      .map(m => `- [ID: ${m.id}] ${m.fato}`)
+      .join('\n') || 'Nenhuma diretiva cadastrada.';
 
     const textoOutrasMemorias = memorias
       .filter(m => m.categoria !== 'diretiva')
-      .map(m => `- [${m.categoria}] ${m.fato}`)
-      .join('\n');
+      .map(m => `- [ID: ${m.id} | ${m.categoria}] ${m.fato}`)
+      .join('\n') || 'Nenhuma memória adicional.';
 
     const mensagensGroq = [
       {
         role: 'system',
-        content: `Você é o Dante, o assistente pessoal, leal e de alta performance do Gabriel. 
-DIRETRIZES FUNDAMENTAIS DO SEU COMPORTAMENTO:
+        content: `Você é o Dante, assistente pessoal de alta performance do Gabriel.
+DIRETRIZES FUNDAMENTAIS DO BANCO:
 ${textoDiretivas}
 
-OUTRAS MEMÓRIAS E DADOS SALVOS:
+MEMÓRIAS E DADOS DO PROJETO (COM IDs PARA CRUD):
 ${textoOutrasMemorias}
 
-REGRAS DE OURO:
-1. Trate sempre o usuário como "chefe" ou "mestre". O criador dele é o Gabriel.
-2. FILTRO DE LINGUAGEM: Analise a gíria, a formalidade, o ritmo e o vocabulário que o Gabriel está usando na mensagem atual e espelhe exatamente o estilo dele na resposta.
-3. SEGURANÇA E PRIVACIDADE: Só discuta detalhes de vida pessoal, projetos confidenciais ou dados protegidos se tiver certeza absoluta que é o Gabriel falando (o que é validado pela senha mestra da API). Caso haja qualquer dúvida, exija confirmação.
-4. CRUD DO PROJETO: Você tem ferramentas para gerenciar o banco de dados (criar, ler, atualizar ou apagar memórias e registros). Use-as ativamente quando solicitado.`
+REGRAS OPERACIONAIS:
+1. Chame o usuário de "chefe" ou "mestre". O mestre do Dante é o Gabriel.
+2. FILTRO DE LINGUAGEM: Espelhe exatamente o estilo, gírias, ritmo e nível de formalidade que o Gabriel usar na mensagem atual. Evite markdown pesado (asteriscos, tabelas) para a fala em voz soar natural.
+3. PRIVACIDADE: Só fale sobre projetos pessoais ou dados confidenciais se tiver certeza de que é o Gabriel.
+4. CRUD COMPLETO: Você pode criar, listar, atualizar e apagar registros do banco de dados usando suas ferramentas sempre que o chefe pedir.`
       },
       ...historico.reverse().map(m => ({
         role: m.role === 'model' ? 'assistant' : m.role,
@@ -497,17 +508,17 @@ REGRAS DE OURO:
       { role: 'user', content: mensagem }
     ];
 
-    // Ferramentas de CRUD e Memória para o Dante manipular o banco de dados
+    // Ferramentas de CRUD completo (Create, Read, Update, Delete)
     const tools = [
       {
         type: 'function',
         function: {
-          name: 'salvar_memoria',
-          description: 'Salva um novo fato, preferência ou diretiva permanente no banco de dados.',
+          name: 'criar_registro',
+          description: 'Cria uma nova memória, diretiva ou anotação de projeto no banco de dados.',
           parameters: {
             type: 'object',
             properties: {
-              fato: { type: 'string', description: 'O fato ou diretiva a ser lembrada.' },
+              fato: { type: 'string', description: 'Conteúdo a ser salvo.' },
               categoria: { type: 'string', description: 'Categoria: diretiva, projeto, preferencia, pessoal' }
             },
             required: ['fato']
@@ -517,13 +528,30 @@ REGRAS DE OURO:
       {
         type: 'function',
         function: {
-          name: 'consultar_banco',
-          description: 'Consulta registros na tabela de memórias ou histórico para buscar dados do projeto.',
+          name: 'atualizar_registro',
+          description: 'Atualiza o texto ou categoria de um registro existente no banco usando o ID.',
           parameters: {
             type: 'object',
             properties: {
-              termo: { type: 'string', description: 'Termo para filtrar nas memórias.' }
-            }
+              id: { type: 'string', description: 'UUID do registro obtido no contexto.' },
+              fato: { type: 'string', description: 'Novo texto atualizado.' },
+              categoria: { type: 'string', description: 'Nova categoria (opcional).' }
+            },
+            required: ['id', 'fato']
+          }
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'apagar_registro',
+          description: 'Remove definitivamente um registro do banco de dados pelo ID.',
+          parameters: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'UUID do registro a ser apagado.' }
+            },
+            required: ['id']
           }
         }
       }
@@ -554,23 +582,27 @@ REGRAS DE OURO:
     const choice = groqData.choices[0].message;
     let respostaFinal = choice.content || '';
 
-    // Executa tool calls (CRUD / Memória) se acionadas pela IA
+    // Executa operações de CRUD no Supabase
     if (choice.tool_calls && choice.tool_calls.length > 0) {
       for (const toolCall of choice.tool_calls) {
         const args = JSON.parse(toolCall.function.arguments || '{}');
 
-        if (toolCall.function.name === 'salvar_memoria') {
+        if (toolCall.function.name === 'criar_registro') {
           await supabase.from('memorias').insert({
             fato: args.fato,
             categoria: args.categoria || 'geral'
           });
-          if (!respostaFinal) {
-            respostaFinal = `Feito, chefe. Salvei essa diretiva no sistema: "${args.fato}".`;
-          }
+          if (!respostaFinal) respostaFinal = `Feito, chefe. Salvei isso no banco: ${args.fato}.`;
         } 
-        else if (toolCall.function.name === 'consultar_banco') {
-          const { data } = await supabase.from('memorias').select('fato, categoria').limit(10);
-          respostaFinal = `Aqui estão os registros encontrados no banco, chefe:\n` + JSON.stringify(data, null, 2);
+        else if (toolCall.function.name === 'atualizar_registro') {
+          const updateData = { fato: args.fato };
+          if (args.categoria) updateData.categoria = args.categoria;
+          await supabase.from('memorias').update(updateData).eq('id', args.id);
+          if (!respostaFinal) respostaFinal = `Atualizado no banco, chefe.`;
+        }
+        else if (toolCall.function.name === 'apagar_registro') {
+          await supabase.from('memorias').delete().eq('id', args.id);
+          if (!respostaFinal) respostaFinal = `Registro removido do banco, chefe.`;
         }
       }
     }
