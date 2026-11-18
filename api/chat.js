@@ -849,7 +849,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ erro: 'Mensagem vazia.' });
     }
 
-    // 1. Busca diretivas, memórias, histórico enxuto (6 mensagens para economizar ITPM) e modelos
+    // 1. Busca diretivas, memórias, histórico enxuto (6 mensagens) e lista de modelos da Groq em paralelo
     const [memRes, histRes, modelsRes] = await Promise.all([
       supabase.from('memorias').select('id, fato, categoria').order('criado_em', { ascending: false }).limit(30),
       supabase.from('mensagens').select('role, conteudo').order('criado_em', { ascending: false }).limit(6),
@@ -865,7 +865,7 @@ export default async function handler(req, res) {
     const memorias = memRes.data || [];
     const historico = histRes.data || [];
 
-    // Filtra apenas modelos de texto válidos
+    // Descobre automaticamente quais modelos de chat estão liberados na sua conta (ignorando áudio e restritos)
     const idsDisponiveis = (modelsRes.data || [])
       .map(m => m.id)
       .filter(id =>
@@ -874,21 +874,12 @@ export default async function handler(req, res) {
         !id.includes('tts') &&
         !id.includes('orpheus') &&
         !id.includes('arabic') &&
-        !id.includes('playai')
+        !id.includes('playai') &&
+        !id.includes('audio')
       );
 
-    // Prioriza modelos com maior limite de tokens por minuto (ITPM) e baixa latência
-    const prioridades = [
-      'llama-3.1-8b-instant',
-      'llama-3.3-70b-versatile',
-      'meta-llama/llama-4-scout-17b-16e-instruct',
-      'gemma2-9b-it'
-    ];
-
-    const modeloEscolhido =
-      prioridades.find(p => idsDisponiveis.includes(p)) ||
-      idsDisponiveis.find(id => id.includes('llama') || id.includes('gemma')) ||
-      'llama-3.1-8b-instant';
+    // Pega o primeiro modelo válido retornado pela API da Groq para a sua chave
+    const modeloEscolhido = idsDisponiveis[0] || 'llama-3.3-70b-versatile';
 
     const textoDiretivas = memorias
       .filter(m => m.categoria === 'diretiva')
@@ -982,51 +973,36 @@ REGRAS OBRIGATÓRIAS:
       }
     ];
 
-    // Função auxiliar para chamar a Groq com fallback automático caso estoure o Rate Limit (429)
+    // Função para chamar a Groq usando o modelo descoberto dinamicamente
     async function chamarGroq(mensagensParaEnviar, usarTools = true) {
-      const modelosTentativa = [modeloEscolhido, 'llama-3.3-70b-versatile', 'llama-3.1-8b-instant'].filter(
-        (v, i, a) => a.indexOf(v) === i
-      );
+      const bodyReq = {
+        model: modeloEscolhido,
+        messages: mensagensParaEnviar,
+        max_tokens: 650,
+        temperature: 0.5
+      };
 
-      let ultimoErro = null;
-
-      for (const modeloAtual of modelosTentativa) {
-        const bodyReq = {
-          model: modeloAtual,
-          messages: mensagensParaEnviar,
-          max_tokens: 650,
-          temperature: 0.5
-        };
-
-        if (usarTools) {
-          bodyReq.tools = tools;
-          bodyReq.tool_choice = 'auto';
-        }
-
-        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${groqKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(bodyReq)
-        });
-
-        const data = await resp.json();
-
-        if (resp.ok) {
-          return data;
-        }
-
-        ultimoErro = `${data.error?.message || 'Erro na API da Groq'} (Modelo: ${modeloAtual})`;
-
-        // Se não for erro de cota/rate limit (429), interrompe imediatamente
-        if (resp.status !== 429) {
-          throw new Error(ultimoErro);
-        }
+      if (usarTools) {
+        bodyReq.tools = tools;
+        bodyReq.tool_choice = 'auto';
       }
 
-      throw new Error(ultimoErro);
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${groqKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(bodyReq)
+      });
+
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        throw new Error(`${data.error?.message || 'Erro na API da Groq'} (Modelo utilizado: ${modeloEscolhido})`);
+      }
+
+      return data;
     }
 
     // Primeira chamada à Groq
@@ -1034,7 +1010,7 @@ REGRAS OBRIGATÓRIAS:
     const choice = groqData.choices[0].message;
     let respostaFinal = choice.content || '';
 
-    // Executa ferramentas reais no Supabase e captura resultados
+    // Executa ferramentas reais no Supabase
     if (choice.tool_calls && choice.tool_calls.length > 0) {
       const resultadosTools = [];
 
@@ -1088,7 +1064,7 @@ REGRAS OBRIGATÓRIAS:
         }
       }
 
-      // Segundo turno: devolve o resultado real do banco para o Dante formular a resposta
+      // Segundo turno: devolve o resultado do banco para o Dante responder
       const mensagensSegundoTurno = [
         ...mensagensGroq,
         choice,
